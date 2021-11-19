@@ -1,5 +1,8 @@
 import argparse
+import logging
+import sys
 from pathlib import Path
+from math import ceil
 from dataclasses import dataclass
 from time import sleep
 from typing import List
@@ -8,11 +11,16 @@ import yaml
 from pycrowdsec.client import StreamClient
 
 
-from fastly_api import VCL, FastlyAPI
-from service import ACLCollection
+from fastly_api import ACL_CAPACITY, FastlyAPI
+from service import ACLCollection, Service
+from utils import with_suffix
+
+VERSION = "0.0.1"
 
 fastly_api: FastlyAPI
 acl_collections: List[ACLCollection] = []
+services: List[Service] = []
+logger: logging.Logger = logging.getLogger("")
 
 # TODO: Validate config in post init method
 @dataclass
@@ -26,12 +34,38 @@ class CrowdSecConfig:
 class FastlyConfig:
     token: str
     service_ids: List[str]
+    max_items: int
 
 
 @dataclass
 class Config:
+    log_level: str
+    # log_mode: str
     crowdsec_config: CrowdSecConfig
     fastly_config: FastlyConfig
+
+    def get_log_level(self) -> int:
+        log_level_by_str = {
+            "debug": logging.DEBUG,
+            "info": logging.INFO,
+            "warning": logging.WARNING,
+            "error": logging.ERROR,
+        }
+        return log_level_by_str.get(self.log_level.lower())
+
+
+class CustomFormatter(logging.Formatter):
+    FORMATS = {
+        logging.ERROR: "[%(asctime)s] %(levelname)s - %(message)s",
+        logging.WARNING: "[%(asctime)s] %(levelname)s - %(message)s",
+        logging.DEBUG: "[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s",
+        "DEFAULT": "[%(asctime)s] %(levelname)s - %(message)s",
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno, self.FORMATS["DEFAULT"])
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
 
 
 def setup_fastly_api(config: FastlyConfig):
@@ -45,48 +79,75 @@ def parse_config_file(path: Path):
     with open(path) as f:
         data = yaml.safe_load(f)
         return Config(
-            crowdsec_config=CrowdSecConfig(**data["crowdsec_config"]), 
+            crowdsec_config=CrowdSecConfig(**data["crowdsec_config"]),
             fastly_config=FastlyConfig(**data["fastly_config"]),
-            )
+            log_level=data["log_level"],
+        )
 
 
 def setup_fastly_infra(config: Config):
+    logger.info("setting up fastly infra")
     for service_id in config.fastly_config.service_ids:
-        new_version = fastly_api.create_new_version_for_service(service_id)
-        acl_collection = ACLCollection(
-            acl_count=1, api=fastly_api, service_id=service_id, version=new_version
+        # new_version = fastly_api.create_new_version_for_service(service_id)
+        new_version = "16"
+        logger.info(
+            with_suffix(f"new version {new_version} for service created", service_id=service_id)
         )
-        acl_collections.append(acl_collection)
-
-    for i, acl_collection in enumerate(acl_collections):
-        conditions = acl_collection.generate_condtions()
-        rule = f"if ({conditions} && !req.http.Fastly-FF) {{ error 403; }}  "
-        print(rule)
-        fastly_api.create_dynamic_vcl(
-            vcl=VCL(
-                content=rule,
-                name=f"crowdsec_rule{i}",
-                service_id=acl_collection.service_id,
-                type="recv",
-                version=acl_collection.version,
+        # FIXME: remove this horrible hack
+        acl_collection_by_action = {"ban": ""}
+        for action in acl_collection_by_action:
+            acl_count = ceil(config.fastly_config.max_items / ACL_CAPACITY)
+            acl_collection_by_action[action] = ACLCollection(
+                api=fastly_api, service_id=service_id, version=new_version, action=action
             )
-        )
-        
+            logger.info(
+                with_suffix(
+                    f"creating acl collection of {acl_count} acls for {action} action",
+                    service_id=service_id,
+                )
+            )
+            acl_collection_by_action[action].create_acls(acl_count)
+            logger.info(
+                with_suffix(f"created acl collection for {action} action", service_id=service_id)
+            )
 
-def run():
+        service = Service(
+            api=fastly_api,
+            acl_collection_by_action=acl_collection_by_action,
+            autonomoussystems_by_action={"ban": set()},
+            countries_by_action={"ban": set()},
+            supported_actions=["ban"],
+            service_id=service_id,
+            version=new_version,
+        )
+        services.append(service)
+
+
+def set_logger(config: Config):
+    logger.setLevel(config.get_log_level())
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    formatter = CustomFormatter()
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.info(f"Starting fastly-bouncer-v{VERSION}")
+
+
+def run(config: Config):
     crowdsec_client = StreamClient(
-        api_key="8ea971e684988b15f48e49f4a080f77c",
-        interval=3
+        lapi_url=config.crowdsec_config.lapi_url,
+        api_key=config.crowdsec_config.lapi_key,
+        scopes=["ip", "range", "country", "as"],
+        interval=3,
     )
+
     crowdsec_client.run()
     while True:
         new_state = crowdsec_client.get_current_decisions()
-        for acl_collection in acl_collections:
-            acl_collection.transform_state(new_state)
+        logger.debug(f"bouncer state {new_state}")
+        for service in services:
+            service.transform_state(new_state)
         sleep(3)
-
-
-
 
 
 if __name__ == "__main__":
@@ -94,7 +155,8 @@ if __name__ == "__main__":
     arg_parser.add_argument("-c", type=Path, help="Path to configuration file.")
     args = arg_parser.parse_args()
     config = parse_config_file(args.c)
+    set_logger(config)
+    logger.info("parsed config successfully")
     setup_fastly_api(config.fastly_config)
     setup_fastly_infra(config)
     run()
-

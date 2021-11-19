@@ -1,10 +1,15 @@
 import ipaddress
+import logging
 from urllib.parse import urljoin
 from dateutil.parser import parse as parse_date
-from dataclasses import asdict, dataclass, field
+from dataclasses import field, dataclass
 from typing import Dict, Set, Tuple
 
 import requests
+
+from utils import with_suffix
+
+logger: logging.Logger = logging.getLogger("")
 
 
 ACL_CAPACITY = 100
@@ -25,7 +30,7 @@ class ACL:
     def is_full(self) -> bool:
         is_full = self.entry_count == ACL_CAPACITY
         if is_full:
-            print(f"ACL {self.name} is full")
+            f"ACL {self.name} is full"
         return is_full
 
 
@@ -34,9 +39,21 @@ class VCL:
     name: str
     service_id: str
     version: str
-    type: str
-    content: str
+    action: str
+    conditional: str = ""
+    type: str = "recv"
     dynamic: str = "1"
+    id: str = ""
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "service_id": self.service_id,
+            "version": self.version,
+            "type": self.type,
+            "content": f"{self.conditional} {{ {self.action} }}",
+            "dynamic": self.dynamic,
+        }
 
 
 class FastlyAPI:
@@ -96,12 +113,27 @@ class FastlyAPI:
             id=resp["id"], service_id=service_id, version=str(version), name=name, created=True
         )
 
+    def create_or_update_dynamic_vcl(self, vcl: VCL) -> VCL:
+        if not vcl.id:
+            vcl = self.create_dynamic_vcl(vcl)
+        else:
+            vcl = self.update_dynamic_vcl(vcl)
+        return vcl
+
     def create_dynamic_vcl(self, vcl: VCL):
         resp = self.session.post(
             self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet"),
-            data=asdict(vcl),
+            data=vcl.to_dict(),
         ).json()
-        return resp
+        vcl.id = resp["id"]
+        return vcl
+
+    def update_dynamic_vcl(self, vcl: VCL):
+        resp = self.session.put(
+            self.api_url(f"/service/{vcl.service_id}/snippet/{vcl.id}"),
+            data=vcl.to_dict(),
+        ).json()
+        return vcl
 
     def process_acl(self, acl: ACL):
         # update_entries = []
@@ -121,9 +153,9 @@ class FastlyAPI:
         #             "id": entry_to_delete,
         #         }
         #     )
-
-        print("entries to delete ", acl.entries_to_delete)
-        print("acl entries", acl.entries)
+        logger.debug(with_suffix(f"entries to delete {acl.entries_to_delete}", acl_id=acl.id))
+        logger.debug(with_suffix(f"entries to add {acl.entries_to_add}", acl_id=acl.id))
+    
         for entry_to_delete in acl.entries_to_delete:
             if entry_to_delete not in acl.entries:
                 continue
