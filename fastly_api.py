@@ -4,10 +4,12 @@ from urllib.parse import urljoin
 from dateutil.parser import parse as parse_date
 from dataclasses import field, dataclass
 from typing import Dict, Set, Tuple
+from urllib3.util.retry import Retry
 
 import requests
+from requests.adapters import HTTPAdapter
 
-from utils import with_suffix
+from utils import with_suffix, DELETE_LIST_FILE
 
 logger: logging.Logger = logging.getLogger("")
 
@@ -46,12 +48,16 @@ class VCL:
     id: str = ""
 
     def to_dict(self):
+        if self.conditional:
+            content = f"{self.conditional} {{ {self.action} }}"
+        else:
+            content = self.action
         return {
             "name": self.name,
             "service_id": self.service_id,
             "version": self.version,
             "type": self.type,
-            "content": f"{self.conditional} {{ {self.action} }}",
+            "content": content,
             "dynamic": self.dynamic,
         }
 
@@ -60,7 +66,25 @@ class FastlyAPI:
     base_url = "https://api.fastly.com"
 
     def __init__(self, token):
+        delete_script = logging.getLogger("deleter")
+        delete_script.addHandler(
+            logging.FileHandler(
+                DELETE_LIST_FILE, mode="w"
+            )
+        )
+        delete_script.setLevel(logging.DEBUG)
+        delete_script.propagate = False
+
+        self.delete_script = delete_script
         self.session = requests.Session()
+        self._token = token
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[500, 502, 503, 504],
+            method_whitelist=["GET", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
         self.session.headers["Fastly-Key"] = token
         self.session.hooks = {"response": self.check_for_errors}
         self._acl_count = 0
@@ -109,23 +133,29 @@ class FastlyAPI:
             self.api_url(f"/service/{service_id}/version/{version}/acl"), data=f"name={name}"
         ).json()
         self._acl_count += 1
+        self.delete_script.info(
+            f'{self._token} https://api.fastly.com/service/{service_id}/version/{version}/acl/{name}'
+        )
         return ACL(
             id=resp["id"], service_id=service_id, version=str(version), name=name, created=True
         )
 
-    def create_or_update_dynamic_vcl(self, vcl: VCL) -> VCL:
+    def create_or_update_vcl(self, vcl: VCL) -> VCL:
         if not vcl.id:
-            vcl = self.create_dynamic_vcl(vcl)
+            vcl = self.create_vcl(vcl)
         else:
             vcl = self.update_dynamic_vcl(vcl)
         return vcl
 
-    def create_dynamic_vcl(self, vcl: VCL):
+    def create_vcl(self, vcl: VCL):
         resp = self.session.post(
             self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet"),
             data=vcl.to_dict(),
         ).json()
         vcl.id = resp["id"]
+        self.delete_script.info(
+            f'{self._token} https://api.fastly.com/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}'
+        )
         return vcl
 
     def update_dynamic_vcl(self, vcl: VCL):
@@ -135,63 +165,47 @@ class FastlyAPI:
         ).json()
         return vcl
 
-    def process_acl(self, acl: ACL):
-        # update_entries = []
-        # for entry_to_add in acl.entries_to_add:
-        #     if entry_to_add in acl.entries:
-        #         continue
-        #     network = ipaddress.ip_network(entry_to_add)
-        #     ip, subnet = str(network.network_address), network.prefixlen
-        #     update_entries.append({"op": "create", "ip": ip, "subnet": subnet})
+    def refresh_acl_entries(self, acl: ACL) -> Dict[str, str]:
+        resp = self.session.get(
+            self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries?per_page=100")
+        )
+        resp = resp.json()
+        acl.entries = {}
+        for entry in resp:
+            acl.entries[f"{entry['ip']}/{entry['subnet']}"] = entry["id"]
+        return acl
 
-        # for entry_to_delete in acl.entries_to_delete:
-        #     if entry_to_delete not in acl.entries:
-        #         continue
-        #     update_entries.append(
-        #         {
-        #             "op": "delete",
-        #             "id": entry_to_delete,
-        #         }
-        #     )
+    def process_acl(self, acl: ACL):
         logger.debug(with_suffix(f"entries to delete {acl.entries_to_delete}", acl_id=acl.id))
         logger.debug(with_suffix(f"entries to add {acl.entries_to_add}", acl_id=acl.id))
-    
-        for entry_to_delete in acl.entries_to_delete:
-            if entry_to_delete not in acl.entries:
-                continue
-            self.session.delete(
-                self.api_url(
-                    f"/service/{acl.service_id}/acl/{acl.id}/entry/{acl.entries[entry_to_delete]}"
-                )
-            ).json()
-            del acl.entries[entry_to_delete]
-
+        update_entries = []
         for entry_to_add in acl.entries_to_add:
             if entry_to_add in acl.entries:
                 continue
             network = ipaddress.ip_network(entry_to_add)
             ip, subnet = str(network.network_address), network.prefixlen
-            resp = self.session.post(
-                self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entry"),
-                json={
-                    "ip": ip,
-                    "subnet": subnet,
-                },
+            update_entries.append({"op": "create", "ip": ip, "subnet": subnet})
+
+        for entry_to_delete in acl.entries_to_delete:
+            update_entries.append(
+                {
+                    "op": "delete",
+                    "id": acl.entries[entry_to_delete],
+                }
+            )
+
+        if not update_entries:
+            return
+
+        # Only 100 operations per request can be done on an acl.
+        for i in range(0, len(update_entries), 100):
+            update_entries_batch = update_entries[i : i + 100]
+            request_body = {"entries": update_entries_batch}
+            resp = self.session.patch(
+                self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries"), json=request_body
             ).json()
-            acl.entries[entry_to_add] = resp["id"]
 
-        return acl
-
-        # if not update_entries:
-        #         return
-
-        # for i in range(0, len(update_entries), 100):
-        #     update_entries_batch = update_entries[i:i + 100]
-        #     request_body = {"entries": update_entries_batch}
-        #     resp = self.session.patch(
-        #         self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries"),
-        #         json=request_body
-        #     ).json()
+        acl = self.refresh_acl_entries(acl)
 
     @staticmethod
     def api_url(endpoint: str) -> str:
