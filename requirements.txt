@@ -1,4 +1,4 @@
 requests
 pyyaml
 python-dateutil
-https://github.com/crowdsecurity/pycrowdsec/archive/main.zip
+pycrowdsec

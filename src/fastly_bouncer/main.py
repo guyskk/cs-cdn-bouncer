@@ -1,28 +1,33 @@
 import argparse
 import csv
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 from pathlib import Path
 from math import ceil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from time import sleep
 from typing import Dict, List
 from multiprocessing.pool import ThreadPool
-import requests
+from importlib.metadata import version
 
 import yaml
+import requests
 from pycrowdsec.client import StreamClient
 
 
-from fastly_api import ACL_CAPACITY, FastlyAPI
-from service import ACLCollection, Service
-from utils import with_suffix, SUPPORTED_ACTIONS, DELETE_LIST_FILE
+from fastly_bouncer.fastly_api import ACL_CAPACITY, FastlyAPI
+from fastly_bouncer.service import ACLCollection, Service
+from fastly_bouncer.utils import with_suffix, SUPPORTED_ACTIONS, DELETE_LIST_FILE, are_filled_validator, get_default_logger, CustomFormatter
 
-VERSION = "0.0.1"
+VERSION = version("cs-fastly-bouncer")
 
 acl_collections: List[ACLCollection] = []
 services: List[Service] = []
-logger: logging.Logger = logging.getLogger("")
+
+logger: logging.Logger = get_default_logger()
+
+
 
 # TODO: Validate config in post init method
 @dataclass
@@ -30,13 +35,23 @@ class CrowdSecConfig:
     lapi_key: str
     lapi_url: str = "http://localhost:8080/"
 
+    def __post_init__(self):
+        are_filled_validator(
+            **{key: getattr(self, key) for key in  asdict(self).keys() }
+        )
+
 
 @dataclass
 class FastlyServiceConfig:
     id: str
-    max_items: int
     recaptcha_site_key: str
     recaptcha_secret_key: str
+    max_items: int = 5000
+
+    def __post_init__(self):
+        are_filled_validator(
+            **{key: getattr(self, key) for key in  asdict(self).keys() }  
+        )
 
 
 @dataclass
@@ -45,11 +60,7 @@ class FastlyAccountConfig:
     services: List[FastlyServiceConfig]
 
 
-@dataclass
-class FastlyConfig:
-    configs: List[FastlyAccountConfig]
-
-def fastly_config_from_dict(data: Dict) -> FastlyConfig:
+def fastly_config_from_dict(data: Dict) -> List[FastlyAccountConfig]:
     account_configs: List[FastlyAccountConfig] = []
     for account_cfg in data:
         service_configs: List[FastlyServiceConfig] = []
@@ -60,15 +71,17 @@ def fastly_config_from_dict(data: Dict) -> FastlyConfig:
                 account_token=account_cfg["account_token"], services=service_configs
             )
         )
-    return FastlyConfig(account_configs)
+    return account_configs
 
 
 @dataclass
 class Config:
     log_level: str
+    log_mode: str
+    log_file: str
     update_frequency: int
     crowdsec_config: CrowdSecConfig
-    fastly_account_configs: FastlyConfig
+    fastly_account_configs: List[FastlyAccountConfig] = field(default_factory=list)
 
     def get_log_level(self) -> int:
         log_level_by_str = {
@@ -79,19 +92,14 @@ class Config:
         }
         return log_level_by_str.get(self.log_level.lower())
 
+    def __post_init__(self):
+        for i, account_config in enumerate(self.fastly_account_configs):
+            if not account_config.account_token:
+                raise ValueError(f" {i+1}th has no token specified in config")
+            if not account_config.services:
+                raise ValueError(f" {i+1}th has no service specified in config")
 
-class CustomFormatter(logging.Formatter):
-    FORMATS = {
-        logging.ERROR: "[%(asctime)s] %(levelname)s - %(message)s",
-        logging.WARNING: "[%(asctime)s] %(levelname)s - %(message)s",
-        logging.DEBUG: "[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s",
-        "DEFAULT": "[%(asctime)s] %(levelname)s - %(message)s",
-    }
 
-    def format(self, record):
-        log_fmt = self.FORMATS.get(record.levelno, self.FORMATS["DEFAULT"])
-        formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
 
 
 def parse_config_file(path: Path):
@@ -103,18 +111,29 @@ def parse_config_file(path: Path):
             crowdsec_config=CrowdSecConfig(**data["crowdsec_config"]),
             fastly_account_configs=fastly_config_from_dict(data["fastly_account_configs"]),
             log_level=data["log_level"],
+            log_mode=data["log_mode"],
+            log_file=data["log_file"],
             update_frequency=int(data["update_frequency"]),
         )
 
+def default_config():
+    return Config(
+        log_level="info",
+        log_mode="stdout",
+        log_file="/var/log/cs-fastly-bouncer.log",
+        crowdsec_config=CrowdSecConfig(
+            lapi_key="<LAPI_KEY>"
+        ),
+        update_frequency="10"
+    )
 
 def setup_fastly_infra(config: Config):
     logger.info("setting up fastly infra")
-    # for account_cfg in config.fastly_account_configs.fastly_account_configs:
     def setup_account(account_cfg: FastlyAccountConfig):
         fastly_api = FastlyAPI(token=account_cfg.account_token)
         for service_cfg in account_cfg.services:
             # new_version = fastly_api.create_new_version_for_service(service_cfg.id)
-            new_version = "38"
+            new_version = "38" # REMOVE AFTER DEBUG
             logger.info(
                 with_suffix(
                     f"new version {new_version} for service created", service_id=service_cfg.id
@@ -158,9 +177,15 @@ def setup_fastly_infra(config: Config):
 
 
 def set_logger(config: Config):
+    global logger
+    list(map(logger.removeHandler, logger.handlers))
     logger.setLevel(config.get_log_level())
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
+    if config.log_mode == "stdout":
+        handler = logging.StreamHandler(sys.stdout)
+    elif config.log_mode == "file":
+        handler = RotatingFileHandler(
+            config.log_file, mode="a+"
+        )
     formatter = CustomFormatter()
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -188,28 +213,85 @@ def cleanup():
             url=cols[1],
             headers={"Fastly-Key": cols[0]}
         )
-        print("called ", cols[1])
+        print("called API ", cols[1])
 
     with open(DELETE_LIST_FILE) as f:
         rows = list(csv.reader(f, delimiter=" "))
+        if not rows:
+            print("nothing to delete!")
+            return
         with ThreadPool(len(rows)) as tp:
             tp.map(perform_delete_req, rows)
 
 
-if __name__ == "__main__":
+def generate_config_for_account(fastly_token:str)-> FastlyAccountConfig:
+    api = FastlyAPI(fastly_token)
+    all_service_name_by_id = api.get_all_service_name_by_id()
+    service_configs: List[FastlyServiceConfig] = []
+    for _, service_id in all_service_name_by_id.items():
+        service_configs.append(
+            FastlyServiceConfig(
+                id=service_id,
+                recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
+                recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
+            )
+        )
+    return FastlyAccountConfig(
+        account_token=fastly_token,
+        services=service_configs
+    )
+
+def generate_config(comma_separated_fastly_tokens: str, base_config: Config = default_config()) -> Config:
+    fastly_tokens = comma_separated_fastly_tokens.split(",")
+    fastly_tokens = list(map(lambda token: token.strip(), fastly_tokens))
+    with ThreadPool(len(fastly_tokens)) as tp:
+        account_configs = tp.map(generate_config_for_account, fastly_tokens)
+    base_config.fastly_account_configs = account_configs
+    return yaml.safe_dump(asdict(base_config))
+
+def print_config(cfg, o_arg):
+    if not o_arg:
+        print(cfg)
+    else:
+        with open(o_arg, "w") as f:
+            f.write(cfg)
+
+
+
+def main():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("-c", type=Path, help="Path to configuration file.")
     arg_parser.add_argument("-d", help="Whether to cleanup resources.", action='store_true')
+    arg_parser.add_argument("-g", type=str, help="Comma separated tokens to generate config for.")
+    arg_parser.add_argument("-o", type=str, help="Path to file to output the generated config.")
     arg_parser.add_help = True 
     args = arg_parser.parse_args()
     if not args.c:
-        if "d" in args :
+        if args.d :
             cleanup()
             sys.exit(0)
+        if args.g:
+            gc = generate_config(args.g)
+            print_config(gc, args.o)
+            sys.exit(0)
+
         arg_parser.print_help()
         sys.exit(1)
-    config = parse_config_file(args.c)
-    set_logger(config)
+    try:
+        config = parse_config_file(args.c)
+        set_logger(config)
+    except ValueError as e:
+        logger.error(f"got error {e} while parsing config at {args.c}")
+        sys.exit(1)
+
+    if args.g:
+        gc = generate_config(args.g, base_config=config)
+        print_config(gc, args.o)
+        sys.exit(0)
+
     logger.info("parsed config successfully")
     setup_fastly_infra(config)
     run(config)
+
+if __name__ == "__main__":
+    main()

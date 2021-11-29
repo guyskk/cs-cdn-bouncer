@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 import requests
 from requests.adapters import HTTPAdapter
 
-from utils import with_suffix, DELETE_LIST_FILE
+from fastly_bouncer.utils import with_suffix, DELETE_LIST_FILE
 
 logger: logging.Logger = logging.getLogger("")
 
@@ -108,6 +108,20 @@ class FastlyAPI:
                 version_to_clone = service_version["number"]
 
         return str(version_to_clone)
+
+    def get_all_service_name_by_id(self)-> Dict[str, str]:
+        current_page = 1
+        per_page = 50
+        all_service_name_by_id = {}
+        while True:
+            resp = self.session.get(
+                self.api_url(f"/service?page={current_page}&per_page={per_page}")
+            )
+            services = resp.json()
+            for service in services:
+                all_service_name_by_id[service["name"]] = service["id"]
+            if len(services) < per_page:
+                return all_service_name_by_id
 
     def create_new_version_for_service(self, service_id: str) -> str:
         """

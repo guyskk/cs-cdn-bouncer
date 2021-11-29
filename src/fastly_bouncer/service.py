@@ -1,13 +1,12 @@
-from collections import defaultdict
 from dataclasses import dataclass, field
 import logging
 from multiprocessing.pool import ThreadPool
 from typing import Dict, Iterable, Set
 from typing import List
 
-import vcl_templates
-from fastly_api import VCL, FastlyAPI, ACL
-from utils import with_suffix
+from fastly_bouncer import vcl_templates
+from fastly_bouncer.fastly_api import VCL, FastlyAPI, ACL
+from fastly_bouncer.utils import with_suffix
 
 logger: logging.Logger = logging.getLogger("")
 
@@ -67,13 +66,13 @@ class ACLCollection:
         expired_items = self.state - new_state
         if new_items:
             logger.info(
-                with_suffix(f"adding {new_items} to acl collection", service_id=self.service_id)
+                with_suffix(f"adding {len(new_items)} to acl collection", service_id=self.service_id)
             )
 
         if expired_items:
             logger.info(
                 with_suffix(
-                    f"removing {expired_items} from acl collection", service_id=self.service_id
+                    f"removing {len(expired_items)} from acl collection", service_id=self.service_id
                 )
             )
 
