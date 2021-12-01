@@ -6,10 +6,20 @@ BIN_PATH_INSTALLED="/usr/local/bin/crowdsec-fastly-bouncer"
 SYSTEMD_PATH_FILE="/etc/systemd/system/crowdsec-fastly-bouncer.service"
 
 BOUNCER_BASH_SCRIPT="#!/usr/bin/env bash
-docker run  --name crowdsec-fastly-bouncer --network=host \\
+BG='-d'
+NAME='--name crowdsec-fastly-bouncer'
+if [[ -t 1 ]]; then
+    BG=''
+    NAME=''
+fi
+docker run \$BG --rm  \$NAME --network=host \\
     --mount  type=bind,source=$CONFIG_DIR/crowdsec-fastly-bouncer.yaml,target=$CONFIG_DIR/crowdsec-fastly-bouncer.yaml \\
     --mount  type=bind,source=/var/log/crowdsec-fastly-bouncer.log,target=/var/log/crowdsec-fastly-bouncer.log  \\
     fastly_bouncer:latest \$@
+trap 'docker kill crowdsec-fastly-bouncer' SIGTERM
+if [[ \$BG == '-d' ]]; then 
+    sleep infinity
+fi
 "
 
 if ! [ $(id -u) = 0 ]; then
