@@ -1,0 +1,9 @@
+[Unit]
+Description=CrowdSec bouncer for fastly
+After=syslog.target crowdsec.service
+
+[Service]
+ExecStart=${BIN} -c ${CFG}/crowdsec-fastly-bouncer.yaml
+
+[Install]
+WantedBy=multi-user.target
