@@ -37,7 +37,6 @@ class ACLCollection:
         """
         Returns True if the item was successfully allocated
         """
-        self.state.add(item)
         # Check if item is already present in some ACL
         if any([item in acl.entries for acl in self.acls]):
             return False
@@ -45,6 +44,7 @@ class ACLCollection:
             if not acl.is_full():
                 acl.entries_to_add.add(item)
                 acl.entry_count += 1
+                self.state.add(item)
                 return True
         return False
 
@@ -66,18 +66,27 @@ class ACLCollection:
         expired_items = self.state - new_state
         if new_items:
             logger.info(
-                with_suffix(f"adding {len(new_items)} to acl collection", service_id=self.service_id)
+                with_suffix(
+                    f"adding {len(new_items)} items to acl collection", service_id=self.service_id
+                )
             )
 
         if expired_items:
             logger.info(
                 with_suffix(
-                    f"removing {len(expired_items)} from acl collection", service_id=self.service_id
+                    f"removing {len(expired_items)} items from acl collection", service_id=self.service_id
                 )
             )
 
         for new_item in new_items:
-            self.insert_item(new_item)
+            if not self.insert_item(new_item):
+                logger.warn(
+                with_suffix(
+                    f"acl_collection for {self.action} is full. Ignoring remaining items.", service_id=self.service_id
+                    )
+                )
+                continue
+
 
         for expired_item in expired_items:
             self.remove_item(expired_item)
@@ -115,7 +124,7 @@ class ACLCollection:
                     )
                 )
 
-    def generate_condtions(self) -> str:
+    def generate_conditions(self) -> str:
         conditions = []
         for acl in self.acls:
             conditions.append(f"(client.ip ~ {acl.name})")
@@ -141,7 +150,7 @@ class Service:
     def __post_init__(self):
         if not self.supported_actions:
             self.supported_actions = ["ban", "captcha"]
-        
+
         self.countries_by_action = {action: set() for action in self.supported_actions}
         self.autonomoussystems_by_action = {action: set() for action in self.supported_actions}
 
@@ -162,7 +171,9 @@ class Service:
                     ),
                 ),
             }
-            for action in [action for action in self.vcl_by_action if action not in self.supported_actions]:
+            for action in [
+                action for action in self.vcl_by_action if action not in self.supported_actions
+            ]:
                 del self.vcl_by_action[action]
 
         if not self.static_vcls and "captcha" in self.supported_actions:
@@ -194,12 +205,11 @@ class Service:
 
         with ThreadPool(len(self.static_vcls)) as tp:
             res = tp.map(self.api.create_vcl, self.static_vcls)
-        
+
     def clear_sets(self):
         for action in self.supported_actions:
             self.countries_by_action[action].clear()
             self.autonomoussystems_by_action[action].clear()
-
 
     def transform_state(self, new_state: Dict[str, str]):
         new_acl_state_by_action = {action: set() for action in self.supported_actions}
@@ -248,12 +258,13 @@ class Service:
 
     @staticmethod
     def generate_equalto_conditions_for_items(items: Iterable, equal_to: str, quote=False):
+        items = sorted(items)
         if not quote:
             return " || ".join([f"{equal_to} == {item}" for item in items])
         return " || ".join([f'{equal_to} == "{item}"' for item in items])
 
     def generate_conditional_for_action(self, action):
-        acl_conditions = self.acl_collection_by_action[action].generate_condtions()
+        acl_conditions = self.acl_collection_by_action[action].generate_conditions()
         country_conditions = self.generate_equalto_conditions_for_items(
             self.countries_by_action[action], "client.geo.country_code", quote=True
         )

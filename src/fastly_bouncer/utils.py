@@ -5,6 +5,7 @@ import sys
 SUPPORTED_ACTIONS = ["ban", "captcha"]
 DELETE_LIST_FILE = "./.clean_all.csv"
 
+
 class CustomFormatter(logging.Formatter):
     FORMATS = {
         logging.ERROR: "[%(asctime)s] %(levelname)s - %(message)s",
@@ -24,10 +25,12 @@ def with_suffix(string: str, **kwargs):
     suffix = " ".join([f"{k}={kwargs[k]}" for k in keys])
     return f"{string} {suffix}"
 
+
 def are_filled_validator(**kwargs):
     for k, v in kwargs.items():
         if not v:
             raise ValueError(f"{k} is not specified in config")
+
 
 def get_default_logger():
     logger = logging.getLogger("")

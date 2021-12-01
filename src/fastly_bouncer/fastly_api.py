@@ -1,9 +1,11 @@
+import datetime
 import ipaddress
 import logging
+from multiprocessing.pool import ThreadPool
 from urllib.parse import urljoin
 from dateutil.parser import parse as parse_date
 from dataclasses import field, dataclass
-from typing import Dict, Set, Tuple
+from typing import Dict, Set, List
 from urllib3.util.retry import Retry
 
 import requests
@@ -67,11 +69,7 @@ class FastlyAPI:
 
     def __init__(self, token):
         delete_script = logging.getLogger("deleter")
-        delete_script.addHandler(
-            logging.FileHandler(
-                DELETE_LIST_FILE, mode="w"
-            )
-        )
+        delete_script.addHandler(logging.FileHandler(DELETE_LIST_FILE, mode="w"))
         delete_script.setLevel(logging.DEBUG)
         delete_script.propagate = False
 
@@ -79,9 +77,7 @@ class FastlyAPI:
         self.session = requests.Session()
         self._token = token
         retry_strategy = Retry(
-            total=3,
-            status_forcelist=[500, 502, 503, 504],
-            method_whitelist=["GET", "POST"]
+            total=3, status_forcelist=[500, 502, 503, 504], method_whitelist=["GET", "POST"]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
@@ -109,19 +105,68 @@ class FastlyAPI:
 
         return str(version_to_clone)
 
-    def get_all_service_name_by_id(self)-> Dict[str, str]:
+    def get_all_service_ids(self) -> List[str]:
         current_page = 1
         per_page = 50
-        all_service_name_by_id = {}
+        all_service_ids = []
         while True:
             resp = self.session.get(
                 self.api_url(f"/service?page={current_page}&per_page={per_page}")
             )
             services = resp.json()
             for service in services:
-                all_service_name_by_id[service["name"]] = service["id"]
+                all_service_ids.append(service["id"])
             if len(services) < per_page:
-                return all_service_name_by_id
+                return all_service_ids
+
+    def get_all_vcls(self, service_id, version) -> List[VCL]:
+        vcls = self.session.get(
+            self.api_url(f"/service/{service_id}/version/{version}/snippet")
+        ).json()
+        return [
+            VCL(
+                name=vcl["name"],
+                service_id=vcl["service_id"],
+                dynamic=vcl["dynamic"],
+                id=vcl["id"],
+                version=vcl["version"],
+                action="",
+            )
+            for vcl in vcls
+        ]
+
+    def delete_vcl(self, vcl: VCL):
+        return self.session.delete(
+            self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}")
+        ).json()
+
+    def get_all_acls(self, service_id, version) -> List[ACL]:
+        resp = self.session.get(self.api_url(f"/service/{service_id}/version/{version}/acl"))
+        acls = resp.json()
+        return [
+            ACL(id=acl["id"], name=acl["name"], service_id=service_id, version=version)
+            for acl in acls
+        ]
+
+    def delete_acl(self, acl: ACL):
+        return self.session.delete(
+            self.api_url(f"/service/{acl.service_id}/version/{acl.version}/acl/{acl.name}")
+        ).json()
+
+    def clear_crowdsec_resources(self, service_id, version):
+        all_acls = self.get_all_acls(service_id, version)
+        all_acls = list(filter(lambda acl: acl.name.startswith("crowdsec"), all_acls))
+
+        all_vcls = self.get_all_vcls(service_id, version)
+        all_vcls = list(filter(lambda vcl: vcl.name.startswith("crowdsec"), all_vcls))
+        if not all_vcls and not all_acls:
+            return
+
+        with ThreadPool(max(len(all_acls), len(all_vcls))) as tp:
+            res1 = tp.map_async(self.delete_acl, all_acls)
+            res2 = tp.map_async(self.delete_vcl, all_vcls)
+            res1.get()
+            res2.get()
 
     def create_new_version_for_service(self, service_id: str) -> str:
         """
@@ -131,6 +176,15 @@ class FastlyAPI:
         version_to_clone_from = self.get_version_to_clone(service_id)
         resp = self.session.put(
             self.api_url(f"/service/{service_id}/version/{version_to_clone_from}/clone")
+        ).json()
+
+        self.session.put(
+            self.api_url(
+                f"/service/{service_id}/version/{resp['number']}",
+            ),
+            json={
+                "comment": f"Version managed by CrowdSec. Cloned from {version_to_clone_from}. Created at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            },
         ).json()
 
         return str(resp["number"])
@@ -148,7 +202,7 @@ class FastlyAPI:
         ).json()
         self._acl_count += 1
         self.delete_script.info(
-            f'{self._token} https://api.fastly.com/service/{service_id}/version/{version}/acl/{name}'
+            f"{self._token} https://api.fastly.com/service/{service_id}/version/{version}/acl/{name}"
         )
         return ACL(
             id=resp["id"], service_id=service_id, version=str(version), name=name, created=True
@@ -168,7 +222,7 @@ class FastlyAPI:
         ).json()
         vcl.id = resp["id"]
         self.delete_script.info(
-            f'{self._token} https://api.fastly.com/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}'
+            f"{self._token} https://api.fastly.com/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}"
         )
         return vcl
 
