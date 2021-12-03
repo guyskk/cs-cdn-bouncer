@@ -42,9 +42,9 @@ See how to obtain fastly account tokens [here](https://docs.fastly.com/en/guides
 
 **Note:** For captcha to work you must provide the `recaptcha_site_key` and `recaptcha_secret_key` for each service. Learn how [here](http://www.google.com/recaptcha/admin)
 
-## Deploy the new configuration:
+## Activate the new configuration:
 
-After starting the bouncer, go in the fastly web UI. For each configured service review the version created by the bouncer. If everything looks good, you can deploy the new configration !
+After starting the bouncer, go in the fastly web UI. For each configured service review the version created by the bouncer. If everything looks good, you can activate the new configration !
 
 # Configuration:
 
@@ -60,6 +60,9 @@ fastly_account_configs:
         recaptcha_site_key: # Required for captcha support
         recaptcha_secret_key: # Required for captcha support
         max_items: 5000 # max_items refers to the capacity of IP/IP ranges to ban/captcha. 
+        activate: false # # Set to true, to activate the new config in production
+        reference_version: # version to clone/use
+        clone_reference_version: true # whether to clone the "reference_version".
 
 update_frequency: 10 # Duration in seconds to poll the crowdsec API
 log_level: info # Valid choices are either of "debug","info","warning","error"
@@ -92,4 +95,4 @@ Crowdsec config is copied from the config at `PATH_TO_BASE_CONFIG`.
 sudo crowdsec-fastly-bouncer -c <PATH_TO_BASE_CONFIG> -d
 ```
 
-This deletes the fastly resources created by the bouncer. It only works if the configured service version is not locked. It is useful for quick iteration before deploying the new service. 
+This deletes the fastly resources created by the bouncer. It only works if the configured service version is not locked. It is useful for quick iteration before activateing the new service. 

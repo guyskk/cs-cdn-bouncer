@@ -26,7 +26,7 @@ class FastlyServiceConfig:
     recaptcha_secret_key: str
     reference_version: str
     clone_reference_version: bool = True
-    auto_deploy: bool = False
+    activate: bool = False
     max_items: int = 5000
 
     def __post_init__(self):
@@ -105,40 +105,71 @@ def default_config():
         update_frequency="10",
     )
 
+class ConfigGenerator:
+    service_name_by_service_id : Dict[str, str] = {}
 
-def generate_config_for_service(api: FastlyAPI, service_id: str):
-    ref_version = api.get_version_to_clone(service_id)
-    return FastlyServiceConfig(
-        id=service_id,
-        recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
-        recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
-        auto_deploy=False,
-        clone_reference_version=True,
-        reference_version=ref_version,
-    )
+    @staticmethod
+    def generate_config(
+        comma_separated_fastly_tokens: str, base_config: Config = default_config()
+    ) -> Config:
+        fastly_tokens = comma_separated_fastly_tokens.split(",")
+        fastly_tokens = list(map(lambda token: token.strip(), fastly_tokens))
+        with ThreadPool(len(fastly_tokens)) as tp:
+            account_configs = tp.map(ConfigGenerator.generate_config_for_account, fastly_tokens)
+        base_config.fastly_account_configs = account_configs
+        return ConfigGenerator.add_comments(yaml.safe_dump(asdict(base_config)))
 
+    @staticmethod
+    def add_comments(config: str):
+        lines = config.split("\n")
+        for i , line in enumerate(lines):
+            for service_id, service_name in ConfigGenerator.service_name_by_service_id.items():
+                has_service_id = False
+                if service_id in line:
+                    lines[i] = f"{line}  # {service_name}"
+                    has_service_id = True
+                    break
+                if has_service_id:
+                    break
 
-def generate_config_for_account(fastly_token: str) -> FastlyAccountConfig:
-    api = FastlyAPI(fastly_token)
-    service_ids = api.get_all_service_ids()
-    service_configs: List[FastlyServiceConfig] = []
+            if "activate:" in line:
+                lines[i] = f"{line}  # Set to true, to activate the new config in production"
+                continue
 
-    with ThreadPool(len(service_ids)) as tp:
-        args = [(api, service_id) for service_id in service_ids]
-        service_configs = tp.starmap(generate_config_for_service, args)
+            if "clone_reference_version:" in line:
+                lines[i] = f"{line}  # Set to false, to modify 'reference_version' instead of cloning it "
+                continue
+            
+            if "reference_version:" in line:
+                lines[i] = f"{line}  # Service version to clone/modify"
+                continue
 
-    return FastlyAccountConfig(account_token=fastly_token, services=service_configs)
+        return "\n".join(lines)
 
+    def generate_config_for_service(api: FastlyAPI, service_id: str):
+        ref_version = api.get_version_to_clone(service_id)
+        return FastlyServiceConfig(
+            id=service_id,
+            recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
+            recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
+            activate=False,
+            clone_reference_version=True,
+            reference_version=ref_version,
+        )
 
-def generate_config(
-    comma_separated_fastly_tokens: str, base_config: Config = default_config()
-) -> Config:
-    fastly_tokens = comma_separated_fastly_tokens.split(",")
-    fastly_tokens = list(map(lambda token: token.strip(), fastly_tokens))
-    with ThreadPool(len(fastly_tokens)) as tp:
-        account_configs = tp.map(generate_config_for_account, fastly_tokens)
-    base_config.fastly_account_configs = account_configs
-    return yaml.safe_dump(asdict(base_config))
+    def generate_config_for_account(fastly_token: str) -> FastlyAccountConfig:
+        api = FastlyAPI(fastly_token)
+        service_ids_with_name = api.get_all_service_ids(with_name=True)
+        for service_id, service_name in service_ids_with_name:
+            ConfigGenerator.service_name_by_service_id[service_id] = service_name
+        service_ids = list(map(lambda x: x[0], service_ids_with_name))
+        service_configs: List[FastlyServiceConfig] = []
+
+        with ThreadPool(len(service_ids)) as tp:
+            args = [(api, service_id) for service_id in service_ids]
+            service_configs = tp.starmap(ConfigGenerator.generate_config_for_service, args)
+
+        return FastlyAccountConfig(account_token=fastly_token, services=service_configs)
 
 
 def print_config(cfg, o_arg):

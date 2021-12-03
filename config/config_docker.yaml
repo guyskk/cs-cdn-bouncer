@@ -9,6 +9,9 @@ fastly_account_configs:
         recaptcha_site_key: # Required for captcha support
         recaptcha_secret_key: # Required for captcha support
         max_items: 5000 # max_items refers to the capacity of IP/IP ranges to ban/captcha. 
+        activate: false
+        reference_version: # version to clone/use
+        clone_reference_version: true # whether to clone the "reference_version".
 
 update_frequency: 10 # Duration in seconds to poll the crowdsec API
 log_level: info # Valid choices are either of "debug","info","warning","error"

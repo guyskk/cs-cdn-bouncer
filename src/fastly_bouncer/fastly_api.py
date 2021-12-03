@@ -115,7 +115,7 @@ class FastlyAPI:
 
         return str(version_to_clone)
 
-    def get_all_service_ids(self) -> List[str]:
+    def get_all_service_ids(self, with_name=False) -> List[str]:
         current_page = 1
         per_page = 50
         all_service_ids = []
@@ -125,7 +125,10 @@ class FastlyAPI:
             )
             services = resp.json()
             for service in services:
-                all_service_ids.append(service["id"])
+                if with_name:
+                    all_service_ids.append((service["id"], service["name"]))
+                else:
+                    all_service_ids.append(service["id"])
             if len(services) < per_page:
                 return all_service_ids
 
@@ -145,7 +148,7 @@ class FastlyAPI:
             for vcl in vcls
         ]
 
-    def deploy_service_version(self, service_id: str, version: str):
+    def activate_service_version(self, service_id: str, version: str):
         self.session.put(self.api_url(f"/service/{service_id}/version/{version}/activate")).json()
 
     def delete_vcl(self, vcl: VCL):

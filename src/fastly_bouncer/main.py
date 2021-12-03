@@ -26,9 +26,9 @@ from fastly_bouncer.utils import (
 )
 from fastly_bouncer.config import (
     Config,
+    ConfigGenerator,
     FastlyAccountConfig,
     FastlyServiceConfig,
-    generate_config,
     parse_config_file,
     print_config,
 )
@@ -161,7 +161,7 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                 acl_collection_by_action=acl_collection_by_action,
                 service_id=service_cfg.id,
                 version=version,
-                auto_deploy=service_cfg.auto_deploy,
+                activate=service_cfg.activate,
             )
 
         with ThreadPool(len(account_cfg.services)) as service_tp:
@@ -227,7 +227,7 @@ def main():
     args = arg_parser.parse_args()
     if not args.c:
         if args.g:
-            gc = generate_config(args.g)
+            gc = ConfigGenerator().generate_config(args.g)
             print_config(gc, args.o)
             sys.exit(0)
 
@@ -242,7 +242,7 @@ def main():
         sys.exit(1)
 
     if args.g:
-        gc = generate_config(args.g, base_config=config)
+        gc = ConfigGenerator().generate_config(args.g, base_config=config)
         print_config(gc, args.o)
         sys.exit(0)
 

@@ -158,7 +158,7 @@ class Service:
     service_id: str
     recaptcha_site_key: str
     recaptcha_secret: str
-    auto_deploy: bool
+    activate: bool
     _first_time: bool = True
     supported_actions: List = field(default_factory=list)
     vcl_by_action: Dict[str, VCL] = field(default_factory=dict)
@@ -214,7 +214,7 @@ class Service:
             service_id=jsonable_dict["service_id"],
             recaptcha_site_key=jsonable_dict["recaptcha_site_key"],
             recaptcha_secret=jsonable_dict["recaptcha_secret"],
-            auto_deploy=jsonable_dict["auto_deploy"],
+            activate=jsonable_dict["activate"],
             _first_time=jsonable_dict["_first_time"],
             supported_actions=jsonable_dict["supported_actions"],
             vcl_by_action=vcl_by_action,
@@ -250,7 +250,7 @@ class Service:
             "service_id": self.service_id,
             "recaptcha_site_key": self.recaptcha_site_key,
             "recaptcha_secret": self.recaptcha_secret,
-            "auto_deploy": self.auto_deploy,
+            "activate": self.activate,
             "_first_time": self._first_time,
             "supported_actions": self.supported_actions,
             "vcl_by_action": vcl_by_action,
@@ -386,17 +386,17 @@ class Service:
             self.acl_collection_by_action[action].commit()
             self.update_vcl(action)
 
-        if self._first_time and self.auto_deploy:
+        if self._first_time and self.activate:
             logger.debug(
                 with_suffix(
-                    f"deploying new service version {self.version}",
+                    f"activating new service version {self.version}",
                     service_id=self.service_id,
                 )
             )
-            self.api.deploy_service_version(self.service_id, self.version)
+            self.api.activate_service_version(self.service_id, self.version)
             logger.info(
                 with_suffix(
-                    f"deployed new service version {self.version}",
+                    f"activated new service version {self.version}",
                     service_id=self.service_id,
                 )
             )

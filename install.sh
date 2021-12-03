@@ -15,7 +15,7 @@ fi
 docker run \$BG --rm  \$NAME --network=host \\
     --mount  type=bind,source=$CONFIG_DIR/crowdsec-fastly-bouncer.yaml,target=$CONFIG_DIR/crowdsec-fastly-bouncer.yaml \\
     --mount  type=bind,source=/var/log/crowdsec-fastly-bouncer.log,target=/var/log/crowdsec-fastly-bouncer.log  \\
-    fastly_bouncer:latest \$@
+    --mount  type=bind,source=/var/lib/crowdsec/crowdsec-fastly-bouncer/cache/fastly-cache.json,target=/var/lib/crowdsec/crowdsec-fastly-bouncer/cache/fastly-cache.json fastly_bouncer:latest \$@
 trap 'docker kill crowdsec-fastly-bouncer' SIGTERM
 if [[ \$BG == '-d' ]]; then 
     sleep infinity
@@ -49,9 +49,12 @@ function check_docker(){
 function install(){
     docker build . -t fastly_bouncer:latest  # After publishing docker image these steps can be shorter
     mkdir -p "$CONFIG_DIR"
+    mkdir -p "/var/lib/crowdsec/crowdsec-fastly-bouncer/cache/"
     if [[ ! -f "$CONFIG_DIR/crowdsec-fastly-bouncer.yaml" ]]; then
         LAPI_KEY=${LAPI_KEY} envsubst < "./config/config_docker.yaml" > "$CONFIG_DIR/crowdsec-fastly-bouncer.yaml"
     fi
+    touch /var/log/crowdsec-fastly-bouncer.log
+    touch /var/lib/crowdsec/crowdsec-fastly-bouncer/cache/fastly-cache.json
     echo "$BOUNCER_BASH_SCRIPT" > "$BIN_PATH_INSTALLED"
     chmod +x /usr/local/bin/crowdsec-fastly-bouncer
     CFG=${CONFIG_DIR} BIN=${BIN_PATH_INSTALLED} envsubst < ./config/crowdsec-fastly-bouncer.service > "${SYSTEMD_PATH_FILE}"
