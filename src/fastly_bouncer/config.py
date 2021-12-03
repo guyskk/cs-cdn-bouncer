@@ -105,8 +105,9 @@ def default_config():
         update_frequency="10",
     )
 
+
 class ConfigGenerator:
-    service_name_by_service_id : Dict[str, str] = {}
+    service_name_by_service_id: Dict[str, str] = {}
 
     @staticmethod
     def generate_config(
@@ -122,7 +123,7 @@ class ConfigGenerator:
     @staticmethod
     def add_comments(config: str):
         lines = config.split("\n")
-        for i , line in enumerate(lines):
+        for i, line in enumerate(lines):
             for service_id, service_name in ConfigGenerator.service_name_by_service_id.items():
                 has_service_id = False
                 if service_id in line:
@@ -137,9 +138,11 @@ class ConfigGenerator:
                 continue
 
             if "clone_reference_version:" in line:
-                lines[i] = f"{line}  # Set to false, to modify 'reference_version' instead of cloning it "
+                lines[
+                    i
+                ] = f"{line}  # Set to false, to modify 'reference_version' instead of cloning it "
                 continue
-            
+
             if "reference_version:" in line:
                 lines[i] = f"{line}  # Service version to clone/modify"
                 continue
