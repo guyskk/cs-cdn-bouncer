@@ -62,7 +62,7 @@ if (obj.status == 676){{
     synthetic {{"
       <html>
         <head>
-          <title>reCAPTCHA demo: Simple page</title>
+          <title>reCAPTCHA</title>
           <script src="https://www.google.com/recaptcha/api.js" async defer></script>
         </head>
         <body>
