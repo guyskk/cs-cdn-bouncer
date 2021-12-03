@@ -1,16 +1,18 @@
 import argparse
-import csv
+import json
 import logging
 from logging.handlers import RotatingFileHandler
+import os
 import sys
+import signal
 from pathlib import Path
 from math import ceil
 from time import sleep
 from typing import List
 from multiprocessing.pool import ThreadPool
+from threading import Thread
 from importlib.metadata import version
 
-import requests
 from pycrowdsec.client import StreamClient
 
 
@@ -19,7 +21,6 @@ from fastly_bouncer.service import ACLCollection, Service
 from fastly_bouncer.utils import (
     with_suffix,
     SUPPORTED_ACTIONS,
-    DELETE_LIST_FILE,
     get_default_logger,
     CustomFormatter,
 )
@@ -40,28 +41,98 @@ services: List[Service] = []
 
 logger: logging.Logger = get_default_logger()
 
+exiting = False
+
+
+def sigterm_signal_handler(signum, frame):
+    global exiting
+    exiting = True
+    logger.info("exiting")
+
+
+signal.signal(signal.SIGTERM, sigterm_signal_handler)
+signal.signal(signal.SIGINT, sigterm_signal_handler)
+
 
 # TODO Avoid nested functions by using starmap
-def setup_fastly_infra(config: Config):
-    logger.info("setting up fastly infra")
+def setup_fastly_infra(config: Config, cleanup_mode):
+    if Path(config.cache_path).exists():
+        logger.info("cache file exists")
+        with open(config.cache_path) as f:
+            s = f.read()
+
+            if not s:
+                logger.warning(f"cache file at {config.cache_path} is empty")
+            else:
+                cache = json.loads(s)
+                services.extend(list(map(Service.from_jsonable_dict, cache)))
+                logger.info(f"loaded exisitng infra using cache")
+                if not cleanup_mode:
+                    return
+
+    if cleanup_mode:
+        logger.info("clearing fastly infra")
+    else:
+        logger.info("setting up fastly infra")
 
     def setup_account(account_cfg: FastlyAccountConfig):
         fastly_api = FastlyAPI(token=account_cfg.account_token)
 
         def setup_service(service_cfg: FastlyServiceConfig) -> Service:
-            new_version = fastly_api.create_new_version_for_service(service_cfg.id)
+            if service_cfg.clone_reference_version or (
+                cleanup_mode
+                and fastly_api.is_service_version_locked(
+                    service_cfg.id, service_cfg.reference_version
+                )
+            ):
+                comment = None
+                if cleanup_mode:
+                    comment = "Clone cleaned from CrowdSec resources"
+                version = fastly_api.clone_version_for_service_from_given_version(
+                    service_cfg.id, service_cfg.reference_version, comment
+                )
+                logger.info(
+                    with_suffix(
+                        f"new version {version} for service created", service_id=service_cfg.id
+                    )
+                )
+            else:
+                version = service_cfg.reference_version
+                logger.info(
+                    with_suffix(
+                        f"using existing version {service_cfg.reference_version}",
+                        service_id=service_cfg.id,
+                    )
+                )
+
             logger.info(
                 with_suffix(
-                    f"new version {new_version} for service created", service_id=service_cfg.id
+                    f"cleaning existing crowdsec resources (if any)",
+                    service_id=service_cfg.id,
+                    version=version,
                 )
             )
-            fastly_api.clear_crowdsec_resources(service_cfg.id, new_version)
-            acl_collection_by_action = {}
 
-            def setup_action_for_service(action):
+            fastly_api.clear_crowdsec_resources(service_cfg.id, version)
+            if cleanup_mode:
+                return
+
+            logger.info(
+                with_suffix(
+                    f"cleaned existing crowdsec resources (if any)",
+                    service_id=service_cfg.id,
+                    version=version,
+                )
+            )
+
+            def setup_action_for_service(action: str) -> ACLCollection:
                 acl_count = ceil(service_cfg.max_items / ACL_CAPACITY)
-                acl_collection_by_action[action] = ACLCollection(
-                    api=fastly_api, service_id=service_cfg.id, version=new_version, action=action
+                acl_collection = ACLCollection(
+                    api=fastly_api,
+                    service_id=service_cfg.id,
+                    version=version,
+                    action=action,
+                    state=set(),
                 )
                 logger.info(
                     with_suffix(
@@ -69,15 +140,19 @@ def setup_fastly_infra(config: Config):
                         service_id=service_cfg.id,
                     )
                 )
-                acl_collection_by_action[action].create_acls(acl_count)
+                acl_collection.create_acls(acl_count)
                 logger.info(
                     with_suffix(
                         f"created acl collection for {action} action", service_id=service_cfg.id
                     )
                 )
+                return acl_collection
 
             with ThreadPool(len(SUPPORTED_ACTIONS)) as tp:
-                tp.map(setup_action_for_service, SUPPORTED_ACTIONS)
+                acl_collections = tp.map(setup_action_for_service, SUPPORTED_ACTIONS)
+                acl_collection_by_action = {
+                    acl_collection.action: acl_collection for acl_collection in acl_collections
+                }
 
             return Service(
                 api=fastly_api,
@@ -85,7 +160,8 @@ def setup_fastly_infra(config: Config):
                 recaptcha_site_key=service_cfg.recaptcha_site_key,
                 acl_collection_by_action=acl_collection_by_action,
                 service_id=service_cfg.id,
-                version=new_version,
+                version=version,
+                auto_deploy=service_cfg.auto_deploy,
             )
 
         with ThreadPool(len(account_cfg.services)) as service_tp:
@@ -118,25 +194,27 @@ def run(config: Config):
     )
 
     crowdsec_client.run()
-    while True:
+    sleep(2)
+    while True and not exiting:
         new_state = crowdsec_client.get_current_decisions()
         with ThreadPool(len(services)) as tp:
             tp.map(lambda service: service.transform_state(new_state), services)
+        new_states = list(map(lambda service: service.as_jsonable_dict(), services))
+        with open(config.cache_path, "w") as f:
+            f.write(json.dumps(new_states, indent=4))
+        if exiting:
+            return
         sleep(config.update_frequency)
 
 
-def cleanup():
-    def perform_delete_req(cols):
-        requests.delete(url=cols[1], headers={"Fastly-Key": cols[0]})
-        print("called API ", cols[1])
-
-    with open(DELETE_LIST_FILE) as f:
-        rows = list(csv.reader(f, delimiter=" "))
-        if not rows:
-            print("nothing to delete!")
-            return
-        with ThreadPool(len(rows)) as tp:
-            tp.map(perform_delete_req, rows)
+def start(config: Config, cleanup_mode):
+    setup_fastly_infra(config, cleanup_mode)
+    if cleanup_mode:
+        if Path(config.cache_path).exists():
+            logger.info("cleaning cache")
+            os.remove(config.cache_path)
+        return
+    run(config)
 
 
 def main():
@@ -148,9 +226,6 @@ def main():
     arg_parser.add_help = True
     args = arg_parser.parse_args()
     if not args.c:
-        if args.d:
-            cleanup()
-            sys.exit(0)
         if args.g:
             gc = generate_config(args.g)
             print_config(gc, args.o)
@@ -160,7 +235,8 @@ def main():
         sys.exit(1)
     try:
         config = parse_config_file(args.c)
-        set_logger(config)
+        if not args.d:  # We want to display this to stdout
+            set_logger(config)
     except ValueError as e:
         logger.error(f"got error {e} while parsing config at {args.c}")
         sys.exit(1)
@@ -171,8 +247,8 @@ def main():
         sys.exit(0)
 
     logger.info("parsed config successfully")
-    setup_fastly_infra(config)
-    run(config)
+    t1 = Thread(target=start, args=([config, args.d]))
+    t1.start()
 
 
 if __name__ == "__main__":

@@ -4,14 +4,14 @@ import logging
 from multiprocessing.pool import ThreadPool
 from urllib.parse import urljoin
 from dateutil.parser import parse as parse_date
-from dataclasses import field, dataclass
+from dataclasses import asdict, field, dataclass
 from typing import Dict, Set, List
 from urllib3.util.retry import Retry
 
 import requests
 from requests.adapters import HTTPAdapter
 
-from fastly_bouncer.utils import with_suffix, DELETE_LIST_FILE
+from fastly_bouncer.utils import with_suffix
 
 logger: logging.Logger = logging.getLogger("")
 
@@ -34,8 +34,21 @@ class ACL:
     def is_full(self) -> bool:
         is_full = self.entry_count == ACL_CAPACITY
         if is_full:
-            f"ACL {self.name} is full"
+            logger.warning(f"ACL {self.name} is full")
         return is_full
+
+    def as_jsonable_dict(self) -> Dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "service_id": self.service_id,
+            "version": self.version,
+            "entries_to_add": list(self.entries_to_add),
+            "entries_to_delete": list(self.entries_to_delete),
+            "entries": self.entries,
+            "entry_count": self.entry_count,
+            "created": self.created,
+        }
 
 
 @dataclass
@@ -48,6 +61,9 @@ class VCL:
     type: str = "recv"
     dynamic: str = "1"
     id: str = ""
+
+    def as_jsonable_dict(self):
+        return asdict(self)
 
     def to_dict(self):
         if self.conditional:
@@ -68,12 +84,6 @@ class FastlyAPI:
     base_url = "https://api.fastly.com"
 
     def __init__(self, token):
-        delete_script = logging.getLogger("deleter")
-        delete_script.addHandler(logging.FileHandler(DELETE_LIST_FILE, mode="w"))
-        delete_script.setLevel(logging.DEBUG)
-        delete_script.propagate = False
-
-        self.delete_script = delete_script
         self.session = requests.Session()
         self._token = token
         retry_strategy = Retry(
@@ -135,6 +145,9 @@ class FastlyAPI:
             for vcl in vcls
         ]
 
+    def deploy_service_version(self, service_id: str, version: str):
+        self.session.put(self.api_url(f"/service/{service_id}/version/{version}/activate")).json()
+
     def delete_vcl(self, vcl: VCL):
         return self.session.delete(
             self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}")
@@ -168,14 +181,15 @@ class FastlyAPI:
             res1.get()
             res2.get()
 
-    def create_new_version_for_service(self, service_id: str) -> str:
+    def clone_version_for_service_from_given_version(
+        self, service_id: str, version: str, comment=""
+    ) -> str:
         """
         Creates new version for service.
         Returns the new version.
         """
-        version_to_clone_from = self.get_version_to_clone(service_id)
         resp = self.session.put(
-            self.api_url(f"/service/{service_id}/version/{version_to_clone_from}/clone")
+            self.api_url(f"/service/{service_id}/version/{version}/clone")
         ).json()
 
         self.session.put(
@@ -183,7 +197,7 @@ class FastlyAPI:
                 f"/service/{service_id}/version/{resp['number']}",
             ),
             json={
-                "comment": f"Version managed by CrowdSec. Cloned from {version_to_clone_from}. Created at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                "comment": f"Created by CrowdSec. {comment} Cloned from version {version}. Created at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
             },
         ).json()
 
@@ -201,9 +215,6 @@ class FastlyAPI:
             self.api_url(f"/service/{service_id}/version/{version}/acl"), data=f"name={name}"
         ).json()
         self._acl_count += 1
-        self.delete_script.info(
-            f"{self._token} https://api.fastly.com/service/{service_id}/version/{version}/acl/{name}"
-        )
         return ACL(
             id=resp["id"], service_id=service_id, version=str(version), name=name, created=True
         )
@@ -215,15 +226,18 @@ class FastlyAPI:
             vcl = self.update_dynamic_vcl(vcl)
         return vcl
 
+    def is_service_version_locked(self, service_id, version) -> bool:
+        resp = self.session.get(self.api_url(f"/service/{service_id}/version/{version}")).json()
+        return resp["locked"]
+
     def create_vcl(self, vcl: VCL):
+        if vcl.id:
+            return vcl
         resp = self.session.post(
             self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet"),
             data=vcl.to_dict(),
         ).json()
         vcl.id = resp["id"]
-        self.delete_script.info(
-            f"{self._token} https://api.fastly.com/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}"
-        )
         return vcl
 
     def update_dynamic_vcl(self, vcl: VCL):

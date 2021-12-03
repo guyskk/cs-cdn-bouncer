@@ -24,6 +24,9 @@ class FastlyServiceConfig:
     id: str
     recaptcha_site_key: str
     recaptcha_secret_key: str
+    reference_version: str
+    clone_reference_version: bool = True
+    auto_deploy: bool = False
     max_items: int = 5000
 
     def __post_init__(self):
@@ -57,6 +60,7 @@ class Config:
     log_file: str
     update_frequency: int
     crowdsec_config: CrowdSecConfig
+    cache_path: str = "/var/lib/crowdsec/crowdsec-fastly-bouncer/cache/fastly-cache.json"
     fastly_account_configs: List[FastlyAccountConfig] = field(default_factory=list)
 
     def get_log_level(self) -> int:
@@ -88,6 +92,7 @@ def parse_config_file(path: Path):
             log_mode=data["log_mode"],
             log_file=data["log_file"],
             update_frequency=int(data["update_frequency"]),
+            cache_path=data["cache_path"],
         )
 
 
@@ -101,18 +106,27 @@ def default_config():
     )
 
 
+def generate_config_for_service(api: FastlyAPI, service_id: str):
+    ref_version = api.get_version_to_clone(service_id)
+    return FastlyServiceConfig(
+        id=service_id,
+        recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
+        recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
+        auto_deploy=False,
+        clone_reference_version=True,
+        reference_version=ref_version,
+    )
+
+
 def generate_config_for_account(fastly_token: str) -> FastlyAccountConfig:
     api = FastlyAPI(fastly_token)
     service_ids = api.get_all_service_ids()
     service_configs: List[FastlyServiceConfig] = []
-    for service_id in service_ids:
-        service_configs.append(
-            FastlyServiceConfig(
-                id=service_id,
-                recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
-                recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
-            )
-        )
+
+    with ThreadPool(len(service_ids)) as tp:
+        args = [(api, service_id) for service_id in service_ids]
+        service_configs = tp.starmap(generate_config_for_service, args)
+
     return FastlyAccountConfig(account_token=fastly_token, services=service_configs)
 
 

@@ -3,7 +3,6 @@ import sys
 
 
 SUPPORTED_ACTIONS = ["ban", "captcha"]
-DELETE_LIST_FILE = "./.clean_all.csv"
 
 
 class CustomFormatter(logging.Formatter):
@@ -28,7 +27,7 @@ def with_suffix(string: str, **kwargs):
 
 def are_filled_validator(**kwargs):
     for k, v in kwargs.items():
-        if not v:
+        if v is None:
             raise ValueError(f"{k} is not specified in config")
 
 
