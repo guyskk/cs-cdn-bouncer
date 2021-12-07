@@ -32,6 +32,7 @@ if(req.http.origURL != req.http.origURL){{
   set req.http.origHost = req.http.host ;
 }}
 
+
 if (std.strlen(querystring.get(req.url, "g-recaptcha-response")) > 0){{  # This is captcha response
   set req.backend = google_host /* www.google.com */ ; 
   set var.captcha_token = querystring.get(req.url, "g-recaptcha-response"); 
@@ -45,7 +46,43 @@ if (std.strlen(querystring.get(req.url, "g-recaptcha-response")) > 0){{  # This 
 
 if(!req.http.Cookie:captchaAuth){{
   error 676 ; 
-}}
+}} else{{
+    if (req.http.Cookie:captchaAuth !~ "^([a-zA-Z0-9\-_]+)?\.([a-zA-Z0-9\-_]+)?\.([a-zA-Z0-9\-_]+)?$") {{
+        // JWT doesn't match signature
+        error 676;
+    }}
+
+    declare local var.X-UUID STRING ;
+    declare local var.X-JWT-Issued STRING ;
+    declare local var.X-JWT-Expires STRING ;
+    declare local var.X-JWT-Header STRING ;
+    declare local var.X-JWT-Payload STRING ;
+    declare local var.X-JWT-Signature STRING ;
+    declare local var.X-JWT STRING ;
+    declare local var.X-JWT-Valid-Signature STRING ; 
+
+    set var.X-JWT-Header = re.group.1;
+    set var.X-JWT-Payload = re.group.2;
+    set var.X-JWT-Signature = digest.base64url_nopad_decode(re.group.3);
+    set var.X-JWT-Valid-Signature = digest.hmac_sha256("{JWT_SECRET}", var.X-JWT-Header "." var.X-JWT-Payload);
+
+    // Validate signature
+    if(digest.secure_is_equal(var.X-JWT-Signature, var.X-JWT-Valid-Signature)) {{
+        // Decode payload
+        set var.X-JWT-Payload = digest.base64url_nopad_decode(var.X-JWT-Payload);
+        set var.X-JWT-Expires = regsub(var.X-JWT-Payload, {{"^.*?"exp"\s*?:\s*?([0-9]+).*?$"}}, "\\1");
+
+        // Validate expiration
+        if (time.is_after(now, std.integer2time(std.atoi(var.X-JWT-Expires)))) {{
+            // Expired Token
+            error 676;
+        }}
+
+    }} else {{
+        // Invalid JWT
+        error 676;
+    }}
+  }}
 
 set req.backend = F_Host_1 ;
 set req.http.host = req.http.origHost ;
@@ -79,16 +116,32 @@ if (obj.status == 676){{
 """
 
 CAPTCHA_VALIDATOR_VCL = """
-
-if (req.http.Host ~ "google.com"){
-  if(resp.status == 200){
+if (req.http.Host ~ "google.com"){{
+  if(resp.status == 200){{
     set req.http.origURL =querystring.filter(req.http.origURL, "g-recaptcha-response");
     set resp.status = 307;
     set resp.response = "Temporary redirect";
-    set resp.http.Set-Cookie = "captchaAuth=1; path=/; max-age=3600";
+
+    declare local var.X-UUID STRING ;
+    declare local var.X-JWT-Issued STRING ;
+    declare local var.X-JWT-Expires STRING ;
+    declare local var.X-JWT-Header STRING ;
+    declare local var.X-JWT-Payload STRING ;
+    declare local var.X-JWT-Signature STRING ;
+    declare local var.X-JWT  STRING ;
+
+    set var.X-UUID = randomstr(8, "0123456789abcdef") "-" randomstr(4, "0123456789abcdef") "-4" randomstr(3, "0123456789abcdef") "-" randomstr(1, "89ab") randomstr(3, "0123456789abcdef") "-" randomstr(12, "0123456789abcdef");
+    set var.X-JWT-Issued = now.sec;
+    set var.X-JWT-Expires = strftime({{"%s"}}, time.add(now, {COOKIE_EXPIRY_DURATION}s));
+    set var.X-JWT-Header = digest.base64url_nopad({{"{{"alg":"HS256","typ":"JWT""}}{{"}}"}});
+    set var.X-JWT-Payload = digest.base64url_nopad({{"{{"sub":""}} var.X-UUID {{"","exp":"}} var.X-JWT-Expires {{","iat":"}} var.X-JWT-Issued {{","iss":"Fastly""}}{{"}}"}});
+    set var.X-JWT-Signature = digest.base64url_nopad(digest.hmac_sha256("{JWT_SECRET}", var.X-JWT-Header "." var.X-JWT-Payload));
+    set var.X-JWT = var.X-JWT-Header "." var.X-JWT-Payload "." var.X-JWT-Signature;
+
+    set resp.http.Set-Cookie = "captchaAuth=" var.X-JWT  "; path=/; max-age=3600";
     set resp.http.Cache-Control = "private, no-store";
     set resp.http.Location = req.http.origURL ;
-  }
+  }}
   restart;
-}
+}}
 """

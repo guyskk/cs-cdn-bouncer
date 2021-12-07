@@ -63,6 +63,7 @@ fastly_account_configs:
         activate: false # # Set to true, to activate the new config in production
         reference_version: # version to clone/use
         clone_reference_version: true # whether to clone the "reference_version".
+        captcha_cookie_expiry_duration: '1800'  # Duration to persist the cookie containing proof of solving captcha
 
 update_frequency: 10 # Duration in seconds to poll the crowdsec API
 log_level: info # Valid choices are either of "debug","info","warning","error"

@@ -28,6 +28,7 @@ class FastlyServiceConfig:
     clone_reference_version: bool = True
     activate: bool = False
     max_items: int = 5000
+    captcha_cookie_expiry_duration: str = "1800"
 
     def __post_init__(self):
         are_filled_validator(**{key: getattr(self, key) for key in asdict(self).keys()})
@@ -145,6 +146,12 @@ class ConfigGenerator:
 
             if "reference_version:" in line:
                 lines[i] = f"{line}  # Service version to clone/modify"
+                continue
+
+            if "captcha_cookie_expiry_duration" in line:
+                lines[
+                    i
+                ] = f"{line}  # Duration(in second) to persist the cookie containing proof of solving captcha"
                 continue
 
         return "\n".join(lines)

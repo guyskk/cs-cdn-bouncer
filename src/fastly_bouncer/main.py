@@ -71,7 +71,7 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                     return
 
     if cleanup_mode:
-        logger.info("clearing fastly infra")
+        logger.info("cleaning fastly infra")
     else:
         logger.info("setting up fastly infra")
 
@@ -162,6 +162,7 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                 service_id=service_cfg.id,
                 version=version,
                 activate=service_cfg.activate,
+                captcha_expiry_duration=service_cfg.captcha_cookie_expiry_duration,
             )
 
         with ThreadPool(len(account_cfg.services)) as service_tp:
@@ -194,7 +195,7 @@ def run(config: Config):
     )
 
     crowdsec_client.run()
-    sleep(2)
+    sleep(2)  # Wait for initial polling by bouncer
     while True and not exiting:
         new_state = crowdsec_client.get_current_decisions()
         with ThreadPool(len(services)) as tp:

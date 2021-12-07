@@ -1,8 +1,8 @@
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from multiprocessing.pool import ThreadPool
-from os import name
 from typing import Dict, Iterable, Set
 from typing import List
 
@@ -159,6 +159,7 @@ class Service:
     recaptcha_site_key: str
     recaptcha_secret: str
     activate: bool
+    captcha_expiry_duration: str = "1800"
     _first_time: bool = True
     supported_actions: List = field(default_factory=list)
     vcl_by_action: Dict[str, VCL] = field(default_factory=dict)
@@ -267,7 +268,7 @@ class Service:
 
         self.countries_by_action = {action: set() for action in self.supported_actions}
         self.autonomoussystems_by_action = {action: set() for action in self.supported_actions}
-
+        jwt_secret = str(uuid.uuid1())
         if not self.vcl_by_action:
             self.vcl_by_action = {
                 "ban": VCL(
@@ -282,6 +283,7 @@ class Service:
                     version=self.version,
                     action=vcl_templates.CAPTCHA_RECV_VCL.format(
                         RECAPTCHA_SECRET=self.recaptcha_secret,
+                        JWT_SECRET=jwt_secret,
                     ),
                 ),
             }
@@ -304,7 +306,10 @@ class Service:
                 VCL(
                     name=f"crowdsec_captcha_validator",
                     service_id=self.service_id,
-                    action=vcl_templates.CAPTCHA_VALIDATOR_VCL,
+                    action=vcl_templates.CAPTCHA_VALIDATOR_VCL.format(
+                        JWT_SECRET=jwt_secret,
+                        COOKIE_EXPIRY_DURATION=self.captcha_expiry_duration,
+                    ),
                     version=self.version,
                     type="deliver",
                 ),
