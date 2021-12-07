@@ -32,6 +32,10 @@ if(req.http.origURL != req.http.origURL){{
   set req.http.origHost = req.http.host ;
 }}
 
+if(req.http.origIP != req.http.origIP){{
+  set req.http.origIP = req.http.Fastly-Client-IP; 
+}}
+
 
 if (std.strlen(querystring.get(req.url, "g-recaptcha-response")) > 0){{  # This is captcha response
   set req.backend = google_host /* www.google.com */ ; 
@@ -60,6 +64,7 @@ if(!req.http.Cookie:captchaAuth){{
     declare local var.X-JWT-Signature STRING ;
     declare local var.X-JWT STRING ;
     declare local var.X-JWT-Valid-Signature STRING ; 
+    declare local var.JWT-IP STRING ; 
 
     set var.X-JWT-Header = re.group.1;
     set var.X-JWT-Payload = re.group.2;
@@ -71,6 +76,15 @@ if(!req.http.Cookie:captchaAuth){{
         // Decode payload
         set var.X-JWT-Payload = digest.base64url_nopad_decode(var.X-JWT-Payload);
         set var.X-JWT-Expires = regsub(var.X-JWT-Payload, {{"^.*?"exp"\s*?:\s*?([0-9]+).*?$"}}, "\\1");
+
+        if(req.http.origIP ~ ":"){{
+          set var.JWT-IP = regsub(var.X-JWT-Payload, {{"^.*?"ip"\s*?:\s*?(([0-9a-fA-F]{{1,4}}:){{7,7}}[0-9a-fA-F]{{1,4}}|([0-9a-fA-F]{{1,4}}:){{1,7}}:|([0-9a-fA-F]{{1,4}}:){{1,6}}:[0-9a-fA-F]{{1,4}}|([0-9a-fA-F]{{1,4}}:){{1,5}}(:[0-9a-fA-F]{{1,4}}){{1,2}}|([0-9a-fA-F]{{1,4}}:){{1,4}}(:[0-9a-fA-F]{{1,4}}){{1,3}}|([0-9a-fA-F]{{1,4}}:){{1,3}}(:[0-9a-fA-F]{{1,4}}){{1,4}}|([0-9a-fA-F]{{1,4}}:){{1,2}}(:[0-9a-fA-F]{{1,4}}){{1,5}}|[0-9a-fA-F]{{1,4}}:((:[0-9a-fA-F]{{1,4}}){{1,6}})|:((:[0-9a-fA-F]{{1,4}}){{1,7}}|:)|fe80:(:[0-9a-fA-F]{{0,4}}){{0,4}}%[0-9a-zA-Z]{{1,}}|::(ffff(:0{{1,4}}){{0,1}}:){{0,1}}((25[0-5]|(2[0-4]|1{{0,1}}[0-9]){{0,1}}[0-9])\.){{3,3}}(25[0-5]|(2[0-4]|1{{0,1}}[0-9]){{0,1}}[0-9])|([0-9a-fA-F]{{1,4}}:){{1,4}}:((25[0-5]|(2[0-4]|1{{0,1}}[0-9]){{0,1}}[0-9])\.){{3,3}}(25[0-5]|(2[0-4]|1{{0,1}}[0-9]){{0,1}}[0-9])).*?$"}}, "\\1") ;
+        }} else {{
+          set var.JWT-IP = regsub(var.X-JWT-Payload, {{"^.*?"ip"\s*?:\s*?([0-9]{{1,3}}\.[0-9]{{1,3}}\.[0-9]{{1,3}}\.[0-9]{{1,3}}).*?$"}}, "\\1");
+        }}
+        if( var.JWT-IP != req.http.origIP){{
+          error 676;
+        }}
 
         // Validate expiration
         if (time.is_after(now, std.integer2time(std.atoi(var.X-JWT-Expires)))) {{
@@ -134,7 +148,7 @@ if (req.http.Host ~ "google.com"){{
     set var.X-JWT-Issued = now.sec;
     set var.X-JWT-Expires = strftime({{"%s"}}, time.add(now, {COOKIE_EXPIRY_DURATION}s));
     set var.X-JWT-Header = digest.base64url_nopad({{"{{"alg":"HS256","typ":"JWT""}}{{"}}"}});
-    set var.X-JWT-Payload = digest.base64url_nopad({{"{{"sub":""}} var.X-UUID {{"","exp":"}} var.X-JWT-Expires {{","iat":"}} var.X-JWT-Issued {{","iss":"Fastly""}}{{"}}"}});
+    set var.X-JWT-Payload = digest.base64url_nopad({{"{{"sub":""}} var.X-UUID {{"","exp":"}} var.X-JWT-Expires {{","ip":"}} req.http.origIP {{","iat":"}} var.X-JWT-Issued {{","iss":"Fastly""}}{{"}}"}});
     set var.X-JWT-Signature = digest.base64url_nopad(digest.hmac_sha256("{JWT_SECRET}", var.X-JWT-Header "." var.X-JWT-Payload));
     set var.X-JWT = var.X-JWT-Header "." var.X-JWT-Payload "." var.X-JWT-Signature;
 
