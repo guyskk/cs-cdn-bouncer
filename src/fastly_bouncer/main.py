@@ -236,8 +236,9 @@ def main():
         sys.exit(1)
     try:
         config = parse_config_file(args.c)
-        if not args.d:  # We want to display this to stdout
-            set_logger(config)
+        if args.d:  # We want to display this to stdout
+            config.log_mode = "stdout"
+        set_logger(config)
     except ValueError as e:
         logger.error(f"got error {e} while parsing config at {args.c}")
         sys.exit(1)
