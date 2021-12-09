@@ -191,6 +191,8 @@ class FastlyAPI:
         Creates new version for service.
         Returns the new version.
         """
+        if not comment:
+            comment = ""
         resp = self.session.put(
             self.api_url(f"/service/{service_id}/version/{version}/clone")
         ).json()
