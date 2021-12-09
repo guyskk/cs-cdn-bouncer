@@ -41,7 +41,7 @@ function check_docker(){
 }
 
 function install(){
-    # docker build . -t fastly_bouncer:latest  # After publishing docker image these steps can be shorter
+    docker build . -t fastly_bouncer:latest  # After publishing docker image these steps can be shorter
     mkdir -p "$CONFIG_DIR"
     mkdir -p "/var/lib/crowdsec/crowdsec-fastly-bouncer/cache/"
     if [[ ! -f "$CONFIG_DIR/crowdsec-fastly-bouncer.yaml" ]]; then
