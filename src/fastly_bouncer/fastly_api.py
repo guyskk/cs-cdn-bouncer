@@ -33,8 +33,6 @@ class ACL:
 
     def is_full(self) -> bool:
         is_full = self.entry_count == ACL_CAPACITY
-        if is_full:
-            logger.warning(f"ACL {self.name} is full")
         return is_full
 
     def as_jsonable_dict(self) -> Dict:
@@ -170,6 +168,9 @@ class FastlyAPI:
         ).json()
 
     def clear_crowdsec_resources(self, service_id, version):
+        """
+        The version of the service provided must not be locked.
+        """
         all_acls = self.get_all_acls(service_id, version)
         all_acls = list(filter(lambda acl: acl.name.startswith("crowdsec"), all_acls))
 

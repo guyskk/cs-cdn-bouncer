@@ -3,14 +3,14 @@ crowdsec_config:
   lapi_url: "http://localhost:8080/"
 
 fastly_account_configs:
-  - account_token: # Obtain this from fastly
+  - account_token: <FASTLY_ACCOUNT_TOKEN> # Obtain this from fastly
     services: 
-      - id: # The id of the service
-        recaptcha_site_key: # Required for captcha support
-        recaptcha_secret_key: # Required for captcha support
+      - id: <FASTLY_SERVICE_ID> # The id of the service
+        recaptcha_site_key: <RECAPTCHA_SITE_KEY> # Required for captcha support
+        recaptcha_secret_key: <RECAPTCHA_SECRET_KEY> # Required for captcha support
         max_items: 5000 # max_items refers to the capacity of IP/IP ranges to ban/captcha. 
         activate: false
-        reference_version: # version to clone/use
+        reference_version: <REFERENCE_VERSION># version to clone/use
         clone_reference_version: true # whether to clone the "reference_version".
         captcha_cookie_expiry_duration: '1800'  # Duration to persist the cookie containing proof of solving captcha
 
@@ -18,3 +18,4 @@ update_frequency: 10 # Duration in seconds to poll the crowdsec API
 log_level: info # Valid choices are either of "debug","info","warning","error"
 log_mode: file # Valid choices are "file" or "stdout"
 log_file: /var/log/crowdsec-fastly-bouncer.log # Ignore if logging to stdout
+cache_path: /var/lib/crowdsec/crowdsec-fastly-bouncer/cache/fastly-cache.json

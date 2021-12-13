@@ -14,6 +14,11 @@ logger: logging.Logger = logging.getLogger("")
 
 
 class ACLCollection:
+    """
+    This is an abstraction of collection of ACLs. It allows us to provision multiple ACLs. It also
+    distributes IPs among these ACLs.
+    """
+
     def __init__(
         self, api: FastlyAPI, service_id: str, version: str, action: str, acls=[], state=set()
     ):
@@ -35,6 +40,10 @@ class ACLCollection:
         }
 
     def create_acls(self, acl_count: int) -> None:
+        """
+        Provisions ACLs
+        """
+
         def create_acl(i):
             acl_name = f"crowdsec_{self.action}_{i}"
             logger.info(with_suffix(f"creating acl {acl_name} ", service_id=self.service_id))
@@ -49,7 +58,7 @@ class ACLCollection:
 
     def insert_item(self, item: str) -> bool:
         """
-        Returns True if the item was successfully allocated
+        Returns True if the item was successfully allocated in an ACL
         """
         # Check if item is already present in some ACL
         for acl in self.acls:
@@ -331,6 +340,11 @@ class Service:
             self.autonomoussystems_by_action[action].clear()
 
     def transform_state(self, new_state: Dict[str, str]):
+        """
+        This method transforms the configuration of the service according to the "new_state".
+        "new_state" is mapping of item->action. Eg  {"1.2.3.4": "ban", "CN": "captcha", "1234": "ban"}.
+        item is string representation of IP or Country or AS Number.
+        """
         new_acl_state_by_action = {action: set() for action in self.supported_actions}
 
         prev_countries_by_action = {

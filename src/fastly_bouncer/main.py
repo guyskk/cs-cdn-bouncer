@@ -54,7 +54,6 @@ signal.signal(signal.SIGTERM, sigterm_signal_handler)
 signal.signal(signal.SIGINT, sigterm_signal_handler)
 
 
-# TODO Avoid nested functions by using starmap
 def setup_fastly_infra(config: Config, cleanup_mode):
     if Path(config.cache_path).exists():
         logger.info("cache file exists")
@@ -195,7 +194,7 @@ def run(config: Config):
     )
 
     crowdsec_client.run()
-    sleep(2)  # Wait for initial polling by bouncer
+    sleep(2)  # Wait for initial polling by bouncer, so we start with a hydrated state
     while True and not exiting:
         new_state = crowdsec_client.get_current_decisions()
         with ThreadPool(len(services)) as tp:
@@ -213,7 +212,8 @@ def start(config: Config, cleanup_mode):
     if cleanup_mode:
         if Path(config.cache_path).exists():
             logger.info("cleaning cache")
-            os.remove(config.cache_path)
+            with open(config.cache_path, "w") as f:
+                pass
         return
     run(config)
 
