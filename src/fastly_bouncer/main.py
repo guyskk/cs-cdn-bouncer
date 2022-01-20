@@ -55,7 +55,8 @@ signal.signal(signal.SIGINT, sigterm_signal_handler)
 
 
 def setup_fastly_infra(config: Config, cleanup_mode):
-    if Path(config.cache_path).exists():
+    p = Path(config.cache_path) 
+    if p.exists():
         logger.info("cache file exists")
         with open(config.cache_path) as f:
             s = f.read()
@@ -68,6 +69,8 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                 logger.info(f"loaded exisitng infra using cache")
                 if not cleanup_mode:
                     return
+    else:
+        p.parent.mkdir(exist_ok=True, parents=True)
 
     if cleanup_mode:
         logger.info("cleaning fastly infra")
