@@ -85,7 +85,9 @@ class FastlyAPI:
         self.session = requests.Session()
         self._token = token
         retry_strategy = Retry(
-            total=3, status_forcelist=[500, 502, 503, 504], method_whitelist=["GET", "POST"]
+            total=3,
+            status_forcelist=[500, 502, 503, 504],
+            method_whitelist=["GET", "POST"],
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
@@ -218,11 +220,16 @@ class FastlyAPI:
         if not name:
             name = f"acl_{str(self._acl_count)}"
         resp = self.session.post(
-            self.api_url(f"/service/{service_id}/version/{version}/acl"), data=f"name={name}"
+            self.api_url(f"/service/{service_id}/version/{version}/acl"),
+            data=f"name={name}",
         ).json()
         self._acl_count += 1
         return ACL(
-            id=resp["id"], service_id=service_id, version=str(version), name=name, created=True
+            id=resp["id"],
+            service_id=service_id,
+            version=str(version),
+            name=name,
+            created=True,
         )
 
     def create_or_update_vcl(self, vcl: VCL) -> VCL:
@@ -290,7 +297,8 @@ class FastlyAPI:
             update_entries_batch = update_entries[i : i + 100]
             request_body = {"entries": update_entries_batch}
             resp = self.session.patch(
-                self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries"), json=request_body
+                self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries"),
+                json=request_body,
             ).json()
 
         acl = self.refresh_acl_entries(acl)

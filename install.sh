@@ -8,7 +8,7 @@ SYSTEMD_PATH_FILE="/etc/systemd/system/crowdsec-fastly-bouncer.service"
 BOUNCER_BASH_SCRIPT="#!/usr/bin/env bash
 NAME='--name crowdsec-fastly-bouncer'
 if [[ -t 1 ]]; then
-    NAME=''
+    NAME='' # This is to avoid conflict with running image
 fi
 touch /var/log/crowdsec-fastly-bouncer.log
 touch /var/lib/crowdsec/crowdsec-fastly-bouncer/cache/fastly-cache.json

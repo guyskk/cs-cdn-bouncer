@@ -100,7 +100,7 @@ def parse_config_file(path: Path):
 def default_config():
     return Config(
         log_level="info",
-        log_mode="file",
+        log_mode="stdout",
         log_file="/var/log/crowdsec-fastly-bouncer.log",  # FIXME: This needs root permissions
         crowdsec_config=CrowdSecConfig(lapi_key="<LAPI_KEY>"),
         update_frequency="10",
@@ -125,7 +125,10 @@ class ConfigGenerator:
     def add_comments(config: str):
         lines = config.split("\n")
         for i, line in enumerate(lines):
-            for service_id, service_name in ConfigGenerator.service_name_by_service_id.items():
+            for (
+                service_id,
+                service_name,
+            ) in ConfigGenerator.service_name_by_service_id.items():
                 has_service_id = False
                 if service_id in line:
                     lines[i] = f"{line}  # {service_name}"
