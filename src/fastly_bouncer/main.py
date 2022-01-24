@@ -55,7 +55,7 @@ signal.signal(signal.SIGINT, sigterm_signal_handler)
 
 
 def setup_fastly_infra(config: Config, cleanup_mode):
-    p = Path(config.cache_path) 
+    p = Path(config.cache_path)
     if p.exists():
         logger.info("cache file exists")
         with open(config.cache_path) as f:
@@ -95,7 +95,8 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                 )
                 logger.info(
                     with_suffix(
-                        f"new version {version} for service created", service_id=service_cfg.id
+                        f"new version {version} for service created",
+                        service_id=service_cfg.id,
                     )
                 )
             else:
@@ -145,7 +146,8 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                 acl_collection.create_acls(acl_count)
                 logger.info(
                     with_suffix(
-                        f"created acl collection for {action} action", service_id=service_cfg.id
+                        f"created acl collection for {action} action",
+                        service_id=service_cfg.id,
                     )
                 )
                 return acl_collection

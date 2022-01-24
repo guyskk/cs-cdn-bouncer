@@ -11,7 +11,11 @@ def create_acl(name):
 class TestACLCollection(TestCase):
     def test_condition_generator(self):
         acl_collection = ACLCollection(1, MagicMock(), "servie_id", "3")
-        acl_collection.acls = [create_acl("acl_1"), create_acl("acl_2"), create_acl("acl_3")]
+        acl_collection.acls = [
+            create_acl("acl_1"),
+            create_acl("acl_2"),
+            create_acl("acl_3"),
+        ]
         assert (
             acl_collection.generate_conditions()
             == "(client.ip ~ acl_1) || (client.ip ~ acl_2) || (client.ip ~ acl_3)"

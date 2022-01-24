@@ -125,7 +125,10 @@ class ConfigGenerator:
     def add_comments(config: str):
         lines = config.split("\n")
         for i, line in enumerate(lines):
-            for service_id, service_name in ConfigGenerator.service_name_by_service_id.items():
+            for (
+                service_id,
+                service_name,
+            ) in ConfigGenerator.service_name_by_service_id.items():
                 has_service_id = False
                 if service_id in line:
                     lines[i] = f"{line}  # {service_name}"

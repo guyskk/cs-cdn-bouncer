@@ -20,7 +20,13 @@ class ACLCollection:
     """
 
     def __init__(
-        self, api: FastlyAPI, service_id: str, version: str, action: str, acls=[], state=set()
+        self,
+        api: FastlyAPI,
+        service_id: str,
+        version: str,
+        action: str,
+        acls=[],
+        state=set(),
     ):
         self.acls: List[ACL] = acls
         self.api: FastlyAPI = api
@@ -148,7 +154,8 @@ class ACLCollection:
                 tp.map(update_acl, acls_to_change)
                 logger.info(
                     with_suffix(
-                        f"acl collection for {self.action} updated", service_id=self.service_id
+                        f"acl collection for {self.action} updated",
+                        service_id=self.service_id,
                     )
                 )
 
