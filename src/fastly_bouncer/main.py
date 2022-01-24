@@ -182,6 +182,8 @@ def set_logger(config: Config):
     logger.setLevel(config.get_log_level())
     if config.log_mode == "stdout":
         handler = logging.StreamHandler(sys.stdout)
+    elif config.log_mode == "stderr":
+        handler = logging.StreamHandler(sys.stderr)
     elif config.log_mode == "file":
         handler = RotatingFileHandler(config.log_file, mode="a+")
     formatter = CustomFormatter()
@@ -225,13 +227,19 @@ def start(config: Config, cleanup_mode):
 
 def main():
     arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument("-c", type=Path, help="Path to configuration file.")
+    arg_parser.add_argument(
+        "-c",
+        type=Path,
+        help="Path to configuration file.",
+        default=Path("/etc/crowdsec/bouncers/crowdsec-fastly-bouncer.yaml"),
+    )
     arg_parser.add_argument("-d", help="Whether to cleanup resources.", action="store_true")
     arg_parser.add_argument("-g", type=str, help="Comma separated tokens to generate config for.")
     arg_parser.add_argument("-o", type=str, help="Path to file to output the generated config.")
     arg_parser.add_help = True
     args = arg_parser.parse_args()
-    if not args.c:
+    if not args.c.exists():
+        print(f"config at {args.c} doesn't exist", file=sys.stderr)
         if args.g:
             gc = ConfigGenerator().generate_config(args.g)
             print_config(gc, args.o)
@@ -241,10 +249,10 @@ def main():
         sys.exit(1)
     try:
         config = parse_config_file(args.c)
-        if args.d:  # We want to display this to stdout
-            config.log_mode = "stdout"
+        if args.d:  # We want to display this to stderr
+            config.log_mode = "stderr"
         set_logger(config)
-    except ValueError as e:
+    except Exception as e:
         logger.error(f"got error {e} while parsing config at {args.c}")
         sys.exit(1)
 

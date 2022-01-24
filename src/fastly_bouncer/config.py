@@ -100,7 +100,7 @@ def parse_config_file(path: Path):
 def default_config():
     return Config(
         log_level="info",
-        log_mode="file",
+        log_mode="stdout",
         log_file="/var/log/crowdsec-fastly-bouncer.log",  # FIXME: This needs root permissions
         crowdsec_config=CrowdSecConfig(lapi_key="<LAPI_KEY>"),
         update_frequency="10",

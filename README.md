@@ -80,8 +80,8 @@ fastly_account_configs:
 
 update_frequency: 10 # Duration in seconds to poll the crowdsec API
 log_level: info # Valid choices are either of "debug","info","warning","error"
-log_mode: file # Valid choices are "file" or "stdout"
-log_file: /var/log/crowdsec-fastly-bouncer.log # Ignore if logging to stdout
+log_mode: file # Valid choices are "file" or "stdout" or "stderr"
+log_file: /var/log/crowdsec-fastly-bouncer.log # Ignore if logging to stdout or stderr
 ```
 
 # Helpers:
