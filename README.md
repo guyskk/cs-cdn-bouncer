@@ -18,14 +18,33 @@ A bouncer that syncs the decisions made by CrowdSec with Fastly's VCL. Manages m
 
 # Installation:
 
-## Using Docker wrapper (quickest)
+## Using pip
+
+Make sure you have python3.8+ installed. Now in a virtual environment run the following:
+
+```
+pip install crowdsec-fastly-bouncer
+crowdsec-fastly-bouncer -g <FASTLY_TOKEN_1>,<FASTLY_TOKEN_2> > config.yaml # generate config
+vim config.yaml # Set crowdsec LAPI key, url, recaptcha keys, logging etc
+crowdsec-fastly-bouncer -c config.yaml # Run it !
+```
+
+See how to obtain fastly account tokens [here](https://docs.fastly.com/en/guides/using-api-tokens). The tokens must have write access for the configured services.
+
+**Note:** If your bouncer is not installed on the same machine than LAPI, don't forget to set the `lapi_url` and `lapi_key` in the configuration file /etc/crowdsec/bouncers/crowdsec-fastly-bouncer.yaml
+
+**Note:** For captcha to work you must provide the `recaptcha_site_key` and `recaptcha_secret_key` for each service. Learn how [here](http://www.google.com/recaptcha/admin)
+
+## Using Docker wrapper 
+
+This method runs the bouncer inside a container. It will also be controlled via systemd.
 
 Make sure you have docker and git installed.
 
 ```console
 git clone https://github.com/crowdsecurity/cs-fastly-bouncer 
 cd cs-fastly-bouncer
-sudo ./install.sh 
+sudo ./install.sh
 sudo crowdsec-fastly-bouncer \
      -c /etc/crowdsec/bouncers/crowdsec-fastly-bouncer.yaml\
     -g <FASTLY_TOKEN_1>,<FASTLY_TOKEN_2> \
@@ -35,25 +54,6 @@ sudo systemctl start crowdsec-fastly-bouncer
 ```
 
 **Note:** The above installation runs the bouncer inside a docker container. Hence it will have access just to the config files which are mounted. By default `/etc/crowdsec/bouncers/crowdsec-fastly-bouncer.yaml` and `/var/log/crowdsec-fastly-bouncer.log` are mounted. To modify this behaviour please edit the file at `/usr/local/bin/crowdsec-fastly-bouncer`
-
-## Using python pip 
-
-Make sure you have python3.8+ installed. Now in a virtual environment run the following:
-
-```
-git clone https://github.com/crowdsecurity/cs-fastly-bouncer 
-cd cs-fastly-bouncer
-pip install ./ 
-crowdsec-fastly-bouncer -g <FASTLY_TOKEN_1>,<FASTLY_TOKEN_2> > config.yaml # generate config
-vim config.yaml # Add crowdsec LAPI key, url, recaptcha keys etc
-crowdsec-fastly-bouncer -c config.yaml # Run it !
-```
-
-See how to obtain fastly account tokens [here](https://docs.fastly.com/en/guides/using-api-tokens). The tokens must have write access for the configured services.
-
-**Note:** If your bouncer is not installed on the same machine than LAPI, don't forget to set the `lapi_url` and `lapi_key` in the configuration file /etc/crowdsec/bouncers/crowdsec-fastly-bouncer.yaml
-
-**Note:** For captcha to work you must provide the `recaptcha_site_key` and `recaptcha_secret_key` for each service. Learn how [here](http://www.google.com/recaptcha/admin)
 
 ## Activate the new configuration:
 
