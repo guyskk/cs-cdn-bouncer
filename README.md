@@ -22,7 +22,7 @@ A bouncer that syncs the decisions made by CrowdSec with Fastly's VCL. Manages m
 
 Make sure you have python3.8+ installed. Now in a virtual environment run the following:
 
-```
+```bash
 pip install crowdsec-fastly-bouncer
 crowdsec-fastly-bouncer -g <FASTLY_TOKEN_1>,<FASTLY_TOKEN_2> > config.yaml # generate config
 vim config.yaml # Set crowdsec LAPI key, url, recaptcha keys, logging etc
@@ -41,7 +41,7 @@ This method runs the bouncer inside a container. It will also be controlled via 
 
 Make sure you have docker and git installed.
 
-```console
+```bash
 git clone https://github.com/crowdsecurity/cs-fastly-bouncer 
 cd cs-fastly-bouncer
 sudo ./install.sh
@@ -92,7 +92,7 @@ The bouncer has few builtin helper features:
 
 **Usage:**
 
-```console
+```bash
 sudo crowdsec-fastly-bouncer -c <PATH_TO_BASE_CONFIG>\
     -g <FASTLY_TOKEN_1>,<FASTLY_TOKEN_2> 
 ```
@@ -105,7 +105,7 @@ Crowdsec config is copied from the config at `PATH_TO_BASE_CONFIG`.
 
 **Usage:**
 
-```console
+```bash
 sudo crowdsec-fastly-bouncer -c <PATH_TO_BASE_CONFIG> -d
 ```
 
