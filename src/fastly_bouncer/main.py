@@ -33,11 +33,7 @@ from fastly_bouncer.config import (
     print_config,
 )
 
-
 VERSION = version("crowdsec-fastly-bouncer")
-
-acl_collections: List[ACLCollection] = []
-services: List[Service] = []
 
 logger: logging.Logger = get_default_logger()
 
@@ -54,6 +50,109 @@ signal.signal(signal.SIGTERM, sigterm_signal_handler)
 signal.signal(signal.SIGINT, sigterm_signal_handler)
 
 
+def setup_action_for_service(
+    fastly_api: FastlyAPI, action: str, service_cfg: FastlyServiceConfig, service_version
+) -> ACLCollection:
+    acl_count = ceil(service_cfg.max_items / ACL_CAPACITY)
+    acl_collection = ACLCollection(
+        api=fastly_api,
+        service_id=service_cfg.id,
+        version=service_version,
+        action=action,
+        state=set(),
+    )
+    logger.info(
+        with_suffix(
+            f"creating acl collection of {acl_count} acls for {action} action",
+            service_id=service_cfg.id,
+        )
+    )
+    acl_collection.create_acls(acl_count)
+    logger.info(
+        with_suffix(
+            f"created acl collection for {action} action",
+            service_id=service_cfg.id,
+        )
+    )
+    return acl_collection
+
+
+def setup_service(service_cfg: FastlyServiceConfig, fastly_api: FastlyAPI, cleanup_mode: bool):
+    if service_cfg.clone_reference_version or (
+        cleanup_mode
+        and fastly_api.is_service_version_locked(service_cfg.id, service_cfg.reference_version)
+    ):
+        comment = None
+        if cleanup_mode:
+            comment = "Clone cleaned from CrowdSec resources"
+        version = fastly_api.clone_version_for_service_from_given_version(
+            service_cfg.id, service_cfg.reference_version, comment
+        )
+        logger.info(
+            with_suffix(
+                f"new version {version} for service created",
+                service_id=service_cfg.id,
+            )
+        )
+    else:
+        version = service_cfg.reference_version
+        logger.info(
+            with_suffix(
+                f"using existing version {service_cfg.reference_version}",
+                service_id=service_cfg.id,
+            )
+        )
+
+    logger.info(
+        with_suffix(
+            f"cleaning existing crowdsec resources (if any)",
+            service_id=service_cfg.id,
+            version=version,
+        )
+    )
+
+    fastly_api.clear_crowdsec_resources(service_cfg.id, version)
+    if cleanup_mode:
+        return
+
+    logger.info(
+        with_suffix(
+            f"cleaned existing crowdsec resources (if any)",
+            service_id=service_cfg.id,
+            version=version,
+        )
+    )
+
+    with ThreadPool(len(SUPPORTED_ACTIONS)) as tp:
+        acl_collections = tp.starmap(
+            setup_action_for_service,
+            [(fastly_api, action, service_cfg, version) for action in SUPPORTED_ACTIONS],
+        )
+        acl_collection_by_action = {
+            acl_collection.action: acl_collection for acl_collection in acl_collections
+        }
+
+    return Service(
+        api=fastly_api,
+        recaptcha_secret=service_cfg.recaptcha_secret_key,
+        recaptcha_site_key=service_cfg.recaptcha_site_key,
+        acl_collection_by_action=acl_collection_by_action,
+        service_id=service_cfg.id,
+        version=version,
+        activate=service_cfg.activate,
+        captcha_expiry_duration=service_cfg.captcha_cookie_expiry_duration,
+    )
+
+
+def setup_account(account_cfg: FastlyAccountConfig, cleanup: bool):
+    global services
+    fastly_api = FastlyAPI(account_cfg.account_token)
+    with ThreadPool(len(account_cfg.services)) as service_tp:
+        new_services = service_tp.starmap(
+            setup_service, [(cfg, fastly_api, cleanup) for cfg in account_cfg.services]
+        )
+        return new_services
+
 def setup_fastly_infra(config: Config, cleanup_mode):
     p = Path(config.cache_path)
     if p.exists():
@@ -65,10 +164,10 @@ def setup_fastly_infra(config: Config, cleanup_mode):
                 logger.warning(f"cache file at {config.cache_path} is empty")
             else:
                 cache = json.loads(s)
-                services.extend(list(map(Service.from_jsonable_dict, cache)))
+                services = list(map(Service.from_jsonable_dict, cache))
                 logger.info(f"loaded exisitng infra using cache")
                 if not cleanup_mode:
-                    return
+                    return services
     else:
         p.parent.mkdir(exist_ok=True, parents=True)
 
@@ -77,103 +176,15 @@ def setup_fastly_infra(config: Config, cleanup_mode):
     else:
         logger.info("setting up fastly infra")
 
-    def setup_account(account_cfg: FastlyAccountConfig):
-        fastly_api = FastlyAPI(token=account_cfg.account_token)
-
-        def setup_service(service_cfg: FastlyServiceConfig) -> Service:
-            if service_cfg.clone_reference_version or (
-                cleanup_mode
-                and fastly_api.is_service_version_locked(
-                    service_cfg.id, service_cfg.reference_version
-                )
-            ):
-                comment = None
-                if cleanup_mode:
-                    comment = "Clone cleaned from CrowdSec resources"
-                version = fastly_api.clone_version_for_service_from_given_version(
-                    service_cfg.id, service_cfg.reference_version, comment
-                )
-                logger.info(
-                    with_suffix(
-                        f"new version {version} for service created",
-                        service_id=service_cfg.id,
-                    )
-                )
-            else:
-                version = service_cfg.reference_version
-                logger.info(
-                    with_suffix(
-                        f"using existing version {service_cfg.reference_version}",
-                        service_id=service_cfg.id,
-                    )
-                )
-
-            logger.info(
-                with_suffix(
-                    f"cleaning existing crowdsec resources (if any)",
-                    service_id=service_cfg.id,
-                    version=version,
-                )
-            )
-
-            fastly_api.clear_crowdsec_resources(service_cfg.id, version)
-            if cleanup_mode:
-                return
-
-            logger.info(
-                with_suffix(
-                    f"cleaned existing crowdsec resources (if any)",
-                    service_id=service_cfg.id,
-                    version=version,
-                )
-            )
-
-            def setup_action_for_service(action: str) -> ACLCollection:
-                acl_count = ceil(service_cfg.max_items / ACL_CAPACITY)
-                acl_collection = ACLCollection(
-                    api=fastly_api,
-                    service_id=service_cfg.id,
-                    version=version,
-                    action=action,
-                    state=set(),
-                )
-                logger.info(
-                    with_suffix(
-                        f"creating acl collection of {acl_count} acls for {action} action",
-                        service_id=service_cfg.id,
-                    )
-                )
-                acl_collection.create_acls(acl_count)
-                logger.info(
-                    with_suffix(
-                        f"created acl collection for {action} action",
-                        service_id=service_cfg.id,
-                    )
-                )
-                return acl_collection
-
-            with ThreadPool(len(SUPPORTED_ACTIONS)) as tp:
-                acl_collections = tp.map(setup_action_for_service, SUPPORTED_ACTIONS)
-                acl_collection_by_action = {
-                    acl_collection.action: acl_collection for acl_collection in acl_collections
-                }
-
-            return Service(
-                api=fastly_api,
-                recaptcha_secret=service_cfg.recaptcha_secret_key,
-                recaptcha_site_key=service_cfg.recaptcha_site_key,
-                acl_collection_by_action=acl_collection_by_action,
-                service_id=service_cfg.id,
-                version=version,
-                activate=service_cfg.activate,
-                captcha_expiry_duration=service_cfg.captcha_cookie_expiry_duration,
-            )
-
-        with ThreadPool(len(account_cfg.services)) as service_tp:
-            services.extend(list(service_tp.map(setup_service, account_cfg.services)))
-
     with ThreadPool(len(config.fastly_account_configs)) as account_tp:
-        account_tp.map(setup_account, config.fastly_account_configs)
+        service_chunks = account_tp.starmap(
+            setup_account, [(cfg, cleanup_mode) for cfg in config.fastly_account_configs]
+        )
+    
+    services = []
+    for chunk in service_chunks:
+        services.extend(chunk)
+    return services
 
 
 def set_logger(config: Config):
@@ -192,7 +203,7 @@ def set_logger(config: Config):
     logger.info(f"Starting fastly-bouncer-v{VERSION}")
 
 
-def run(config: Config):
+def run(config: Config, services: List[Service]):
     crowdsec_client = StreamClient(
         lapi_url=config.crowdsec_config.lapi_url,
         api_key=config.crowdsec_config.lapi_key,
@@ -215,14 +226,14 @@ def run(config: Config):
 
 
 def start(config: Config, cleanup_mode):
-    setup_fastly_infra(config, cleanup_mode)
+    services = setup_fastly_infra(config, cleanup_mode)
     if cleanup_mode:
         if Path(config.cache_path).exists():
             logger.info("cleaning cache")
             with open(config.cache_path, "w") as f:
                 pass
         return
-    run(config)
+    run(config, services)
 
 
 def main():
