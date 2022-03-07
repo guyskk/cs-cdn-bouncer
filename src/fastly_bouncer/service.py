@@ -3,11 +3,13 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from multiprocessing.pool import ThreadPool
-from typing import Dict, Iterable, Set
-from typing import List
+from time import sleep
+from typing import Dict, Iterable, List, Set
+
+import trio
 
 from fastly_bouncer import vcl_templates
-from fastly_bouncer.fastly_api import VCL, FastlyAPI, ACL
+from fastly_bouncer.fastly_api import ACL, VCL, FastlyAPI
 from fastly_bouncer.utils import with_suffix
 
 logger: logging.Logger = logging.getLogger("")
@@ -45,22 +47,31 @@ class ACLCollection:
             "state": list(self.state),
         }
 
-    def create_acls(self, acl_count: int) -> None:
+    async def create_acl(self, i, sender_chan):
+        acl_name = f"crowdsec_{self.action}_{i}"
+        logger.info(with_suffix(f"creating acl {acl_name} ", service_id=self.service_id))
+        acl = await self.api.create_acl_for_service(
+            service_id=self.service_id, version=self.version, name=acl_name
+        )
+        logger.info(with_suffix(f"created acl {acl_name}", service_id=self.service_id))
+        async with sender_chan:
+            await sender_chan.send(acl)
+
+    async def create_acls(self, acl_count: int) -> None:
         """
         Provisions ACLs
         """
+        acls = []
+        sender, receiver = trio.open_memory_channel(0)
+        async with trio.open_nursery() as n:
+            async with sender:
+                for i in range(acl_count):
+                    n.start_soon(self.create_acl, i, sender.clone())
 
-        def create_acl(i):
-            acl_name = f"crowdsec_{self.action}_{i}"
-            logger.info(with_suffix(f"creating acl {acl_name} ", service_id=self.service_id))
-            acl = self.api.create_acl_for_service(
-                service_id=self.service_id, version=self.version, name=acl_name
-            )
-            logger.info(with_suffix(f"created acl {acl_name}", service_id=self.service_id))
-            return acl
-
-        with ThreadPool(acl_count) as tp:
-            self.acls = list(tp.map(create_acl, range(acl_count)))
+            async with receiver:
+                async for acl in receiver:
+                    acls.append(acl)
+        return acls
 
     def insert_item(self, item: str) -> bool:
         """
@@ -125,39 +136,21 @@ class ACLCollection:
         for expired_item in expired_items:
             self.remove_item(expired_item)
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         acls_to_change = list(
             filter(lambda acl: acl.entries_to_add or acl.entries_to_delete, self.acls)
         )
 
-        def update_acl(acl: ACL):
-            logger.debug(
-                with_suffix(
-                    f"commiting changes to acl {acl.name}",
-                    service_id=self.service_id,
-                    acl_collection=self.action,
-                )
-            )
-            self.api.process_acl(acl)
-            logger.debug(
-                with_suffix(
-                    f"commited changes to acl {acl.name}",
-                    service_id=self.service_id,
-                    acl_collection=self.action,
-                )
-            )
-            acl.entries_to_add = set()
-            acl.entries_to_delete = set()
-
         if len(acls_to_change):
-            with ThreadPool(len(acls_to_change)) as tp:
-                tp.map(update_acl, acls_to_change)
-                logger.info(
-                    with_suffix(
-                        f"acl collection for {self.action} updated",
-                        service_id=self.service_id,
-                    )
+            async with trio.open_nursery() as n:
+                for acl in acls_to_change:
+                    n.start_soon(self.update_acl, acl)
+            logger.info(
+                with_suffix(
+                    f"acl collection for {self.action} updated",
+                    service_id=self.service_id,
                 )
+            )
 
     def generate_conditions(self) -> str:
         conditions = []
@@ -165,6 +158,25 @@ class ACLCollection:
             conditions.append(f"(client.ip ~ {acl.name})")
 
         return " || ".join(conditions)
+
+    async def update_acl(self, acl: ACL):
+        logger.debug(
+            with_suffix(
+                f"commiting changes to acl {acl.name}",
+                service_id=self.service_id,
+                acl_collection=self.action,
+            )
+        )
+        await self.api.process_acl(acl)
+        logger.debug(
+            with_suffix(
+                f"commited changes to acl {acl.name}",
+                service_id=self.service_id,
+                acl_collection=self.action,
+            )
+        )
+        acl.entries_to_add = set()
+        acl.entries_to_delete = set()
 
 
 @dataclass
@@ -338,15 +350,17 @@ class Service:
                 ),
             ]
 
-        with ThreadPool(len(self.static_vcls)) as tp:
-            res = tp.map(self.api.create_vcl, self.static_vcls)
+    async def create_static_vcls(self):
+        async with trio.open_nursery() as n:
+            for vcl in self.static_vcls:
+                n.start_soon(self.api.create_vcl, vcl)
 
     def clear_sets(self):
         for action in self.supported_actions:
             self.countries_by_action[action].clear()
             self.autonomoussystems_by_action[action].clear()
 
-    def transform_state(self, new_state: Dict[str, str]):
+    async def transform_state(self, new_state: Dict[str, str]):
         """
         This method transforms the configuration of the service according to the "new_state".
         "new_state" is mapping of item->action. Eg  {"1.2.3.4": "ban", "CN": "captcha", "1234": "ban"}.
@@ -405,12 +419,13 @@ class Service:
             if new_systems:
                 logger.info(f"AS {new_systems} will get {action}")
 
-        self.commit()
+        await self.commit()
 
-    def commit(self):
-        for action in self.vcl_by_action:
-            self.acl_collection_by_action[action].commit()
-            self.update_vcl(action)
+    async def commit(self):
+        async with trio.open_nursery() as n:
+            for action in self.vcl_by_action:
+                n.start_soon(self.acl_collection_by_action[action].commit)
+                n.start_soon(self.update_vcl, action)
 
         if self._first_time and self.activate:
             logger.debug(
@@ -419,7 +434,7 @@ class Service:
                     service_id=self.service_id,
                 )
             )
-            self.api.activate_service_version(self.service_id, self.version)
+            await self.api.activate_service_version(self.service_id, self.version)
             logger.info(
                 with_suffix(
                     f"activated new service version {self.version}",
@@ -428,12 +443,12 @@ class Service:
             )
             self._first_time = False
 
-    def update_vcl(self, action: str):
+    async def update_vcl(self, action: str):
         vcl = self.vcl_by_action[action]
         new_conditional = self.generate_conditional_for_action(action)
         if new_conditional != vcl.conditional:
             vcl.conditional = new_conditional
-            vcl = self.api.create_or_update_vcl(vcl)
+            vcl = await self.api.create_or_update_vcl(vcl)
             self.vcl_by_action[action] = vcl
 
     @staticmethod

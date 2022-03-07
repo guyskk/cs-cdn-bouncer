@@ -1,7 +1,8 @@
-from unittest.mock import MagicMock
 from unittest import TestCase
-from fastly_bouncer.service import ACLCollection
+from unittest.mock import MagicMock
+
 from fastly_bouncer.fastly_api import ACL
+from fastly_bouncer.service import ACLCollection
 
 
 def create_acl(name):
