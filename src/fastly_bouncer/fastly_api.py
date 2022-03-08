@@ -78,6 +78,10 @@ class VCL:
         }
 
 
+async def raise_on_4xx_5xx(response):
+    response.raise_for_status()
+
+
 class FastlyAPI:
     base_url = "https://api.fastly.com"
 
@@ -88,7 +92,7 @@ class FastlyAPI:
             headers=httpx.Headers({"Fastly-Key": self._token}),
             timeout=20,
             transport=httpx.AsyncHTTPTransport(retries=3),
-            event_hooks={"response": [lambda resp: resp.raise_for_status()]},
+            event_hooks={"response": [raise_on_4xx_5xx]},
         )
 
     async def get_version_to_clone(self, service_id: str) -> str:
@@ -177,10 +181,10 @@ class FastlyAPI:
         """
         The version of the service provided must not be locked.
         """
-        all_acls = self.get_all_acls(service_id, version)
+        all_acls = await self.get_all_acls(service_id, version)
         all_acls = list(filter(lambda acl: acl.name.startswith("crowdsec"), all_acls))
 
-        all_vcls = self.get_all_vcls(service_id, version)
+        all_vcls = await self.get_all_vcls(service_id, version)
         all_vcls = list(filter(lambda vcl: vcl.name.startswith("crowdsec"), all_vcls))
         if not all_vcls and not all_acls:
             return
@@ -204,8 +208,6 @@ class FastlyAPI:
             self.api_url(f"/service/{service_id}/version/{version}/clone")
         )
         resp = resp.json()
-        print(resp)
-
         tmp = await self.session.put(
             self.api_url(
                 f"/service/{service_id}/version/{resp['number']}",

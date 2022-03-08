@@ -111,7 +111,7 @@ async def setup_service(
         )
     )
 
-    fastly_api.clear_crowdsec_resources(service_cfg.id, version)
+    await fastly_api.clear_crowdsec_resources(service_cfg.id, version)
     if cleanup_mode:
         return
 
@@ -234,7 +234,7 @@ async def run(config: Config, services: List[Service]):
 
     crowdsec_client.run()
     await trio.sleep(2)  # Wait for initial polling by bouncer, so we start with a hydrated state
-    previous_state = {}
+    previous_states = {}
     while True and not exiting:
         new_state = crowdsec_client.get_current_decisions()
 
@@ -242,10 +242,11 @@ async def run(config: Config, services: List[Service]):
             for s in services:
                 n.start_soon(s.transform_state, new_state)
 
-        # if previous_state != new_state:
         new_states = list(map(lambda service: service.as_jsonable_dict(), services))
-        async with await trio.open_file(config.cache_path, "w") as f:
-            await f.write(json.dumps(new_states, indent=4))
+        if new_states != previous_states:
+            async with await trio.open_file(config.cache_path, "w") as f:
+                await f.write(json.dumps(new_states, indent=4))
+            previous_states = new_states
 
         if exiting:
             return
