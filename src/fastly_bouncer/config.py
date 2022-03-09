@@ -1,13 +1,11 @@
 import logging
 from dataclasses import asdict, dataclass, field
-from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import Dict, List
 
 import trio
 import yaml
 
-import fastly_bouncer
 from fastly_bouncer.fastly_api import FastlyAPI
 from fastly_bouncer.utils import are_filled_validator
 

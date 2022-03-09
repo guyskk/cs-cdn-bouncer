@@ -12,13 +12,17 @@ from typing import List
 import trio
 from pycrowdsec.client import StreamClient
 
-from fastly_bouncer.config import (Config, ConfigGenerator,
-                                   FastlyAccountConfig, FastlyServiceConfig,
-                                   parse_config_file, print_config)
+from fastly_bouncer.config import (
+    Config,
+    ConfigGenerator,
+    FastlyAccountConfig,
+    FastlyServiceConfig,
+    parse_config_file,
+    print_config,
+)
 from fastly_bouncer.fastly_api import ACL_CAPACITY, FastlyAPI
 from fastly_bouncer.service import ACLCollection, Service
-from fastly_bouncer.utils import (SUPPORTED_ACTIONS, CustomFormatter,
-                                  get_default_logger, with_suffix)
+from fastly_bouncer.utils import SUPPORTED_ACTIONS, CustomFormatter, get_default_logger, with_suffix
 
 VERSION = version("crowdsec-fastly-bouncer")
 
@@ -72,7 +76,10 @@ async def setup_action_for_service(
 
 
 async def setup_service(
-    service_cfg: FastlyServiceConfig, fastly_api: FastlyAPI, cleanup_mode: bool, sender_chan
+    service_cfg: FastlyServiceConfig,
+    fastly_api: FastlyAPI,
+    cleanup_mode: bool,
+    sender_chan: trio.MemorySendChannel,
 ):
     if service_cfg.clone_reference_version or (
         cleanup_mode
@@ -113,6 +120,7 @@ async def setup_service(
 
     await fastly_api.clear_crowdsec_resources(service_cfg.id, version)
     if cleanup_mode:
+        sender_chan.close()
         return
 
     logger.info(
@@ -231,9 +239,10 @@ async def run(config: Config, services: List[Service]):
         scopes=["ip", "range", "country", "as"],
         interval=config.update_frequency,
     )
-
     crowdsec_client.run()
     await trio.sleep(2)  # Wait for initial polling by bouncer, so we start with a hydrated state
+    if not crowdsec_client.is_running():
+        return
     previous_states = {}
     while True and not exiting:
         new_state = crowdsec_client.get_current_decisions()

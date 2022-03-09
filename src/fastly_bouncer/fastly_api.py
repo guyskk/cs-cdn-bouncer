@@ -1,7 +1,6 @@
 import datetime
 import ipaddress
 import logging
-import re
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from typing import Dict, List, Set
@@ -90,7 +89,7 @@ class FastlyAPI:
         self._acl_count = 0
         self.session = httpx.AsyncClient(
             headers=httpx.Headers({"Fastly-Key": self._token}),
-            timeout=20,
+            timeout=httpx.Timeout(connect=30, read=None, write=15, pool=None),
             transport=httpx.AsyncHTTPTransport(retries=3),
             event_hooks={"response": [raise_on_4xx_5xx]},
         )
