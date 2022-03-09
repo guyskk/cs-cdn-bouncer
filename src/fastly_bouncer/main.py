@@ -1,29 +1,17 @@
 import argparse
 import json
 import logging
-from logging.handlers import RotatingFileHandler
-import os
-import sys
 import signal
-from pathlib import Path
-from math import ceil
-from time import sleep
-from typing import List
-from multiprocessing.pool import ThreadPool
-from threading import Thread
+import sys
 from importlib.metadata import version
+from logging.handlers import RotatingFileHandler
+from math import ceil
+from pathlib import Path
+from typing import List
 
+import trio
 from pycrowdsec.client import StreamClient
 
-
-from fastly_bouncer.fastly_api import ACL_CAPACITY, FastlyAPI
-from fastly_bouncer.service import ACLCollection, Service
-from fastly_bouncer.utils import (
-    with_suffix,
-    SUPPORTED_ACTIONS,
-    get_default_logger,
-    CustomFormatter,
-)
 from fastly_bouncer.config import (
     Config,
     ConfigGenerator,
@@ -32,12 +20,11 @@ from fastly_bouncer.config import (
     parse_config_file,
     print_config,
 )
-
+from fastly_bouncer.fastly_api import ACL_CAPACITY, FastlyAPI
+from fastly_bouncer.service import ACLCollection, Service
+from fastly_bouncer.utils import SUPPORTED_ACTIONS, CustomFormatter, get_default_logger, with_suffix
 
 VERSION = version("crowdsec-fastly-bouncer")
-
-acl_collections: List[ACLCollection] = []
-services: List[Service] = []
 
 logger: logging.Logger = get_default_logger()
 
@@ -54,21 +41,160 @@ signal.signal(signal.SIGTERM, sigterm_signal_handler)
 signal.signal(signal.SIGINT, sigterm_signal_handler)
 
 
-def setup_fastly_infra(config: Config, cleanup_mode):
+async def setup_action_for_service(
+    fastly_api: FastlyAPI,
+    action: str,
+    service_cfg: FastlyServiceConfig,
+    service_version,
+    sender_chan,
+) -> ACLCollection:
+
+    acl_count = ceil(service_cfg.max_items / ACL_CAPACITY)
+    acl_collection = ACLCollection(
+        api=fastly_api,
+        service_id=service_cfg.id,
+        version=service_version,
+        action=action,
+        state=set(),
+    )
+    logger.info(
+        with_suffix(
+            f"creating acl collection of {acl_count} acls for {action} action",
+            service_id=service_cfg.id,
+        )
+    )
+    acls = await acl_collection.create_acls(acl_count)
+    acl_collection.acls = acls
+    logger.info(
+        with_suffix(
+            f"created acl collection for {action} action",
+            service_id=service_cfg.id,
+        )
+    )
+    async with sender_chan:
+        await sender_chan.send(acl_collection)
+
+
+async def setup_service(
+    service_cfg: FastlyServiceConfig,
+    fastly_api: FastlyAPI,
+    cleanup_mode: bool,
+    sender_chan: trio.MemorySendChannel,
+):
+    if service_cfg.clone_reference_version or (
+        cleanup_mode
+        and (
+            await fastly_api.is_service_version_locked(
+                service_cfg.id, service_cfg.reference_version
+            )
+        )
+    ):
+        comment = None
+        if cleanup_mode:
+            comment = "Clone cleaned from CrowdSec resources"
+        version = await fastly_api.clone_version_for_service_from_given_version(
+            service_cfg.id, service_cfg.reference_version, comment
+        )
+        logger.info(
+            with_suffix(
+                f"new version {version} for service created",
+                service_id=service_cfg.id,
+            )
+        )
+    else:
+        version = service_cfg.reference_version
+        logger.info(
+            with_suffix(
+                f"using existing version {service_cfg.reference_version}",
+                service_id=service_cfg.id,
+            )
+        )
+
+    logger.info(
+        with_suffix(
+            f"cleaning existing crowdsec resources (if any)",
+            service_id=service_cfg.id,
+            version=version,
+        )
+    )
+
+    await fastly_api.clear_crowdsec_resources(service_cfg.id, version)
+    if cleanup_mode:
+        sender_chan.close()
+        return
+
+    logger.info(
+        with_suffix(
+            f"cleaned existing crowdsec resources (if any)",
+            service_id=service_cfg.id,
+            version=version,
+        )
+    )
+
+    acl_collection_by_action = {}
+    for action in SUPPORTED_ACTIONS:
+        sender, receiver = trio.open_memory_channel(0)
+        async with trio.open_nursery() as n:
+            async with sender:
+                n.start_soon(
+                    setup_action_for_service,
+                    fastly_api,
+                    action,
+                    service_cfg,
+                    version,
+                    sender.clone(),
+                )
+
+            async with receiver:
+                async for acl_collection in receiver:
+                    acl_collection_by_action[acl_collection.action] = acl_collection
+
+    async with sender_chan:
+        s = Service(
+            api=fastly_api,
+            recaptcha_secret=service_cfg.recaptcha_secret_key,
+            recaptcha_site_key=service_cfg.recaptcha_site_key,
+            acl_collection_by_action=acl_collection_by_action,
+            service_id=service_cfg.id,
+            version=version,
+            activate=service_cfg.activate,
+            captcha_expiry_duration=service_cfg.captcha_cookie_expiry_duration,
+        )
+        await s.create_static_vcls()
+        await sender_chan.send(s)
+
+
+async def setup_account(account_cfg: FastlyAccountConfig, cleanup: bool, sender_chan):
+    fastly_api = FastlyAPI(account_cfg.account_token)
+    new_services = []
+    sender, receiver = trio.open_memory_channel(0)
+    async with trio.open_nursery() as n:
+        async with sender:
+            for cfg in account_cfg.services:
+                n.start_soon(setup_service, cfg, fastly_api, cleanup, sender.clone())
+
+        async with receiver:
+            async for service in receiver:
+                new_services.append(service)
+
+    async with sender_chan:
+        await sender_chan.send(new_services)
+
+
+async def setup_fastly_infra(config: Config, cleanup_mode):
     p = Path(config.cache_path)
     if p.exists():
         logger.info("cache file exists")
-        with open(config.cache_path) as f:
-            s = f.read()
-
+        async with await trio.open_file(config.cache_path) as f:
+            s = await f.read()
             if not s:
                 logger.warning(f"cache file at {config.cache_path} is empty")
             else:
                 cache = json.loads(s)
-                services.extend(list(map(Service.from_jsonable_dict, cache)))
+                services = list(map(Service.from_jsonable_dict, cache))
                 logger.info(f"loaded exisitng infra using cache")
                 if not cleanup_mode:
-                    return
+                    return services
     else:
         p.parent.mkdir(exist_ok=True, parents=True)
 
@@ -77,103 +203,17 @@ def setup_fastly_infra(config: Config, cleanup_mode):
     else:
         logger.info("setting up fastly infra")
 
-    def setup_account(account_cfg: FastlyAccountConfig):
-        fastly_api = FastlyAPI(token=account_cfg.account_token)
+    services = []
+    sender, receiver = trio.open_memory_channel(0)
+    async with trio.open_nursery() as n:
+        async with sender:
+            for cfg in config.fastly_account_configs:
+                n.start_soon(setup_account, cfg, cleanup_mode, sender.clone())
 
-        def setup_service(service_cfg: FastlyServiceConfig) -> Service:
-            if service_cfg.clone_reference_version or (
-                cleanup_mode
-                and fastly_api.is_service_version_locked(
-                    service_cfg.id, service_cfg.reference_version
-                )
-            ):
-                comment = None
-                if cleanup_mode:
-                    comment = "Clone cleaned from CrowdSec resources"
-                version = fastly_api.clone_version_for_service_from_given_version(
-                    service_cfg.id, service_cfg.reference_version, comment
-                )
-                logger.info(
-                    with_suffix(
-                        f"new version {version} for service created",
-                        service_id=service_cfg.id,
-                    )
-                )
-            else:
-                version = service_cfg.reference_version
-                logger.info(
-                    with_suffix(
-                        f"using existing version {service_cfg.reference_version}",
-                        service_id=service_cfg.id,
-                    )
-                )
+        async for service_chunk in receiver:
+            services.extend(service_chunk)
 
-            logger.info(
-                with_suffix(
-                    f"cleaning existing crowdsec resources (if any)",
-                    service_id=service_cfg.id,
-                    version=version,
-                )
-            )
-
-            fastly_api.clear_crowdsec_resources(service_cfg.id, version)
-            if cleanup_mode:
-                return
-
-            logger.info(
-                with_suffix(
-                    f"cleaned existing crowdsec resources (if any)",
-                    service_id=service_cfg.id,
-                    version=version,
-                )
-            )
-
-            def setup_action_for_service(action: str) -> ACLCollection:
-                acl_count = ceil(service_cfg.max_items / ACL_CAPACITY)
-                acl_collection = ACLCollection(
-                    api=fastly_api,
-                    service_id=service_cfg.id,
-                    version=version,
-                    action=action,
-                    state=set(),
-                )
-                logger.info(
-                    with_suffix(
-                        f"creating acl collection of {acl_count} acls for {action} action",
-                        service_id=service_cfg.id,
-                    )
-                )
-                acl_collection.create_acls(acl_count)
-                logger.info(
-                    with_suffix(
-                        f"created acl collection for {action} action",
-                        service_id=service_cfg.id,
-                    )
-                )
-                return acl_collection
-
-            with ThreadPool(len(SUPPORTED_ACTIONS)) as tp:
-                acl_collections = tp.map(setup_action_for_service, SUPPORTED_ACTIONS)
-                acl_collection_by_action = {
-                    acl_collection.action: acl_collection for acl_collection in acl_collections
-                }
-
-            return Service(
-                api=fastly_api,
-                recaptcha_secret=service_cfg.recaptcha_secret_key,
-                recaptcha_site_key=service_cfg.recaptcha_site_key,
-                acl_collection_by_action=acl_collection_by_action,
-                service_id=service_cfg.id,
-                version=version,
-                activate=service_cfg.activate,
-                captcha_expiry_duration=service_cfg.captcha_cookie_expiry_duration,
-            )
-
-        with ThreadPool(len(account_cfg.services)) as service_tp:
-            services.extend(list(service_tp.map(setup_service, account_cfg.services)))
-
-    with ThreadPool(len(config.fastly_account_configs)) as account_tp:
-        account_tp.map(setup_account, config.fastly_account_configs)
+    return services
 
 
 def set_logger(config: Config):
@@ -192,37 +232,48 @@ def set_logger(config: Config):
     logger.info(f"Starting fastly-bouncer-v{VERSION}")
 
 
-def run(config: Config):
+async def run(config: Config, services: List[Service]):
     crowdsec_client = StreamClient(
         lapi_url=config.crowdsec_config.lapi_url,
         api_key=config.crowdsec_config.lapi_key,
         scopes=["ip", "range", "country", "as"],
         interval=config.update_frequency,
     )
-
     crowdsec_client.run()
-    sleep(2)  # Wait for initial polling by bouncer, so we start with a hydrated state
+    await trio.sleep(2)  # Wait for initial polling by bouncer, so we start with a hydrated state
+    if not crowdsec_client.is_running():
+        return
+    previous_states = {}
     while True and not exiting:
         new_state = crowdsec_client.get_current_decisions()
-        with ThreadPool(len(services)) as tp:
-            tp.map(lambda service: service.transform_state(new_state), services)
+
+        async with trio.open_nursery() as n:
+            for s in services:
+                n.start_soon(s.transform_state, new_state)
+
         new_states = list(map(lambda service: service.as_jsonable_dict(), services))
-        with open(config.cache_path, "w") as f:
-            f.write(json.dumps(new_states, indent=4))
+        if new_states != previous_states:
+            async with await trio.open_file(config.cache_path, "w") as f:
+                await f.write(json.dumps(new_states, indent=4))
+            previous_states = new_states
+
         if exiting:
             return
-        sleep(config.update_frequency)
+
+        await trio.sleep(config.update_frequency)
 
 
-def start(config: Config, cleanup_mode):
-    setup_fastly_infra(config, cleanup_mode)
+async def start(config: Config, cleanup_mode):
+    global services
+    services = await setup_fastly_infra(config, cleanup_mode)
     if cleanup_mode:
         if Path(config.cache_path).exists():
             logger.info("cleaning cache")
             with open(config.cache_path, "w") as f:
                 pass
         return
-    run(config)
+
+    await run(config, services)
 
 
 def main():
@@ -241,7 +292,7 @@ def main():
     if not args.c.exists():
         print(f"config at {args.c} doesn't exist", file=sys.stderr)
         if args.g:
-            gc = ConfigGenerator().generate_config(args.g)
+            gc = trio.run(ConfigGenerator().generate_config, args.g)
             print_config(gc, args.o)
             sys.exit(0)
 
@@ -257,13 +308,12 @@ def main():
         sys.exit(1)
 
     if args.g:
-        gc = ConfigGenerator().generate_config(args.g, base_config=config)
+        gc = trio.run(ConfigGenerator().generate_config, args.g, config)
         print_config(gc, args.o)
         sys.exit(0)
 
     logger.info("parsed config successfully")
-    t1 = Thread(target=start, args=([config, args.d]))
-    t1.start()
+    trio.run(start, config, args.d)
 
 
 if __name__ == "__main__":

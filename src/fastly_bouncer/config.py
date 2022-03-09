@@ -1,13 +1,13 @@
 import logging
 from dataclasses import asdict, dataclass, field
-from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
+import trio
 import yaml
 
-from fastly_bouncer.utils import are_filled_validator
 from fastly_bouncer.fastly_api import FastlyAPI
+from fastly_bouncer.utils import are_filled_validator
 
 
 @dataclass
@@ -111,14 +111,14 @@ class ConfigGenerator:
     service_name_by_service_id: Dict[str, str] = {}
 
     @staticmethod
-    def generate_config(
+    async def generate_config(
         comma_separated_fastly_tokens: str, base_config: Config = default_config()
     ) -> Config:
         fastly_tokens = comma_separated_fastly_tokens.split(",")
         fastly_tokens = list(map(lambda token: token.strip(), fastly_tokens))
-        with ThreadPool(len(fastly_tokens)) as tp:
-            account_configs = tp.map(ConfigGenerator.generate_config_for_account, fastly_tokens)
-        base_config.fastly_account_configs = account_configs
+        for token in fastly_tokens:
+            account_cfg = await ConfigGenerator.generate_config_for_account(token)
+            base_config.fastly_account_configs.append(account_cfg)
         return ConfigGenerator.add_comments(yaml.safe_dump(asdict(base_config)))
 
     @staticmethod
@@ -159,28 +159,39 @@ class ConfigGenerator:
 
         return "\n".join(lines)
 
-    def generate_config_for_service(api: FastlyAPI, service_id: str):
-        ref_version = api.get_version_to_clone(service_id)
-        return FastlyServiceConfig(
-            id=service_id,
-            recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
-            recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
-            activate=False,
-            clone_reference_version=True,
-            reference_version=ref_version,
-        )
+    async def generate_config_for_service(api: FastlyAPI, service_id: str, sender_chan):
+        ref_version = await api.get_version_to_clone(service_id)
+        async with sender_chan:
+            await sender_chan.send(
+                FastlyServiceConfig(
+                    id=service_id,
+                    recaptcha_site_key="<RECAPTCHA_SITE_KEY>",
+                    recaptcha_secret_key="<RECAPTCHA_SECRET_KEY>",
+                    activate=False,
+                    clone_reference_version=True,
+                    reference_version=ref_version,
+                )
+            )
 
-    def generate_config_for_account(fastly_token: str) -> FastlyAccountConfig:
+    async def generate_config_for_account(fastly_token: str) -> FastlyAccountConfig:
         api = FastlyAPI(fastly_token)
-        service_ids_with_name = api.get_all_service_ids(with_name=True)
+        service_ids_with_name = await api.get_all_service_ids(with_name=True)
         for service_id, service_name in service_ids_with_name:
             ConfigGenerator.service_name_by_service_id[service_id] = service_name
         service_ids = list(map(lambda x: x[0], service_ids_with_name))
         service_configs: List[FastlyServiceConfig] = []
 
-        with ThreadPool(len(service_ids)) as tp:
-            args = [(api, service_id) for service_id in service_ids]
-            service_configs = tp.starmap(ConfigGenerator.generate_config_for_service, args)
+        sender, receiver = trio.open_memory_channel(0)
+        async with trio.open_nursery() as n:
+            async with sender:
+                for service_id in service_ids:
+                    n.start_soon(
+                        ConfigGenerator.generate_config_for_service, api, service_id, sender.clone()
+                    )
+
+            async with receiver:
+                async for service_cfg in receiver:
+                    service_configs.append(service_cfg)
 
         return FastlyAccountConfig(account_token=fastly_token, services=service_configs)
 

@@ -1,15 +1,14 @@
 import datetime
 import ipaddress
 import logging
-from multiprocessing.pool import ThreadPool
+from dataclasses import asdict, dataclass, field
+from functools import partial
+from typing import Dict, List, Set
 from urllib.parse import urljoin
-from dateutil.parser import parse as parse_date
-from dataclasses import asdict, field, dataclass
-from typing import Dict, Set, List
-from urllib3.util.retry import Retry
 
-import requests
-from requests.adapters import HTTPAdapter
+import httpx
+import trio
+from dateutil.parser import parse as parse_date
 
 from fastly_bouncer.utils import with_suffix
 
@@ -78,30 +77,32 @@ class VCL:
         }
 
 
+async def raise_on_4xx_5xx(response):
+    response.raise_for_status()
+
+
 class FastlyAPI:
     base_url = "https://api.fastly.com"
 
     def __init__(self, token):
-        self.session = requests.Session()
         self._token = token
-        retry_strategy = Retry(
-            total=3,
-            status_forcelist=[500, 502, 503, 504],
-            method_whitelist=["GET", "POST"],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("https://", adapter)
-        self.session.headers["Fastly-Key"] = token
-        self.session.hooks = {"response": self.check_for_errors}
         self._acl_count = 0
+        self.session = httpx.AsyncClient(
+            headers=httpx.Headers({"Fastly-Key": self._token}),
+            timeout=httpx.Timeout(connect=30, read=None, write=15, pool=None),
+            transport=httpx.AsyncHTTPTransport(retries=3),
+            event_hooks={"response": [raise_on_4xx_5xx]},
+        )
 
-    def get_version_to_clone(self, service_id: str) -> str:
+    async def get_version_to_clone(self, service_id: str) -> str:
         """
         Gets the version to clone from. If service has active version, then the active version will be cloned.
         Else the the version which was last updated would be cloned
         """
 
-        service_versions_resp = self.session.get(self.api_url(f"/service/{service_id}/version"))
+        service_versions_resp = await self.session.get(
+            self.api_url(f"/service/{service_id}/version")
+        )
         service_versions = service_versions_resp.json()
 
         version_to_clone = None
@@ -115,12 +116,12 @@ class FastlyAPI:
 
         return str(version_to_clone)
 
-    def get_all_service_ids(self, with_name=False) -> List[str]:
+    async def get_all_service_ids(self, with_name=False) -> List[str]:
         current_page = 1
         per_page = 50
         all_service_ids = []
         while True:
-            resp = self.session.get(
+            resp = await self.session.get(
                 self.api_url(f"/service?page={current_page}&per_page={per_page}")
             )
             services = resp.json()
@@ -132,10 +133,11 @@ class FastlyAPI:
             if len(services) < per_page:
                 return all_service_ids
 
-    def get_all_vcls(self, service_id, version) -> List[VCL]:
-        vcls = self.session.get(
+    async def get_all_vcls(self, service_id, version) -> List[VCL]:
+        vcls = await self.session.get(
             self.api_url(f"/service/{service_id}/version/{version}/snippet")
-        ).json()
+        )
+        vcls = vcls.json()
         return [
             VCL(
                 name=vcl["name"],
@@ -148,46 +150,51 @@ class FastlyAPI:
             for vcl in vcls
         ]
 
-    def activate_service_version(self, service_id: str, version: str):
-        self.session.put(self.api_url(f"/service/{service_id}/version/{version}/activate")).json()
+    async def activate_service_version(self, service_id: str, version: str):
+        resp = await self.session.put(
+            self.api_url(f"/service/{service_id}/version/{version}/activate")
+        )
+        resp.json()
 
-    def delete_vcl(self, vcl: VCL):
-        return self.session.delete(
+    async def delete_vcl(self, vcl: VCL):
+        resp = await self.session.delete(
             self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet/{vcl.name}")
-        ).json()
+        )
+        return resp.json()
 
-    def get_all_acls(self, service_id, version) -> List[ACL]:
-        resp = self.session.get(self.api_url(f"/service/{service_id}/version/{version}/acl"))
+    async def get_all_acls(self, service_id, version) -> List[ACL]:
+        resp = await self.session.get(self.api_url(f"/service/{service_id}/version/{version}/acl"))
         acls = resp.json()
         return [
             ACL(id=acl["id"], name=acl["name"], service_id=service_id, version=version)
             for acl in acls
         ]
 
-    def delete_acl(self, acl: ACL):
-        return self.session.delete(
+    async def delete_acl(self, acl: ACL):
+        resp = await self.session.delete(
             self.api_url(f"/service/{acl.service_id}/version/{acl.version}/acl/{acl.name}")
-        ).json()
+        )
+        return resp
 
-    def clear_crowdsec_resources(self, service_id, version):
+    async def clear_crowdsec_resources(self, service_id, version):
         """
         The version of the service provided must not be locked.
         """
-        all_acls = self.get_all_acls(service_id, version)
+        all_acls = await self.get_all_acls(service_id, version)
         all_acls = list(filter(lambda acl: acl.name.startswith("crowdsec"), all_acls))
 
-        all_vcls = self.get_all_vcls(service_id, version)
+        all_vcls = await self.get_all_vcls(service_id, version)
         all_vcls = list(filter(lambda vcl: vcl.name.startswith("crowdsec"), all_vcls))
         if not all_vcls and not all_acls:
             return
 
-        with ThreadPool(max(len(all_acls), len(all_vcls))) as tp:
-            res1 = tp.map_async(self.delete_acl, all_acls)
-            res2 = tp.map_async(self.delete_vcl, all_vcls)
-            res1.get()
-            res2.get()
+        async with trio.open_nursery() as n:
+            for acl in all_acls:
+                n.start_soon(self.delete_acl, acl)
+            for vcl in all_vcls:
+                n.start_soon(self.delete_vcl, vcl)
 
-    def clone_version_for_service_from_given_version(
+    async def clone_version_for_service_from_given_version(
         self, service_id: str, version: str, comment=""
     ) -> str:
         """
@@ -196,22 +203,22 @@ class FastlyAPI:
         """
         if not comment:
             comment = ""
-        resp = self.session.put(
+        resp = await self.session.put(
             self.api_url(f"/service/{service_id}/version/{version}/clone")
-        ).json()
-
-        self.session.put(
+        )
+        resp = resp.json()
+        tmp = await self.session.put(
             self.api_url(
                 f"/service/{service_id}/version/{resp['number']}",
             ),
             json={
                 "comment": f"Created by CrowdSec. {comment} Cloned from version {version}. Created at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
             },
-        ).json()
-
+        )
+        tmp.json()
         return str(resp["number"])
 
-    def create_acl_for_service(self, service_id, version, name=None) -> ACL:
+    async def create_acl_for_service(self, service_id, version, name=None) -> ACL:
         """
         Create an ACL resource for the given service_id and version. If "name"
         parameter is not specified, a random name would be used for the ACL.
@@ -219,10 +226,12 @@ class FastlyAPI:
         """
         if not name:
             name = f"acl_{str(self._acl_count)}"
-        resp = self.session.post(
+
+        r = await self.session.post(
             self.api_url(f"/service/{service_id}/version/{version}/acl"),
             data=f"name={name}",
-        ).json()
+        )
+        resp = r.json()
         self._acl_count += 1
         return ACL(
             id=resp["id"],
@@ -232,36 +241,39 @@ class FastlyAPI:
             created=True,
         )
 
-    def create_or_update_vcl(self, vcl: VCL) -> VCL:
+    async def create_or_update_vcl(self, vcl: VCL) -> VCL:
         if not vcl.id:
-            vcl = self.create_vcl(vcl)
+            vcl = await self.create_vcl(vcl)
         else:
-            vcl = self.update_dynamic_vcl(vcl)
+            vcl = await self.update_dynamic_vcl(vcl)
         return vcl
 
-    def is_service_version_locked(self, service_id, version) -> bool:
-        resp = self.session.get(self.api_url(f"/service/{service_id}/version/{version}")).json()
+    async def is_service_version_locked(self, service_id, version) -> bool:
+        resp = await self.session.get(self.api_url(f"/service/{service_id}/version/{version}"))
+        resp = resp.json()
         return resp["locked"]
 
-    def create_vcl(self, vcl: VCL):
+    async def create_vcl(self, vcl: VCL):
         if vcl.id:
             return vcl
-        resp = self.session.post(
+        resp = await self.session.post(
             self.api_url(f"/service/{vcl.service_id}/version/{vcl.version}/snippet"),
             data=vcl.to_dict(),
-        ).json()
+        )
+        resp = resp.json()
         vcl.id = resp["id"]
         return vcl
 
-    def update_dynamic_vcl(self, vcl: VCL):
-        resp = self.session.put(
+    async def update_dynamic_vcl(self, vcl: VCL):
+        resp = await self.session.put(
             self.api_url(f"/service/{vcl.service_id}/snippet/{vcl.id}"),
             data=vcl.to_dict(),
-        ).json()
+        )
+        resp.json()
         return vcl
 
-    def refresh_acl_entries(self, acl: ACL) -> Dict[str, str]:
-        resp = self.session.get(
+    async def refresh_acl_entries(self, acl: ACL) -> Dict[str, str]:
+        resp = await self.session.get(
             self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries?per_page=100")
         )
         resp = resp.json()
@@ -270,7 +282,7 @@ class FastlyAPI:
             acl.entries[f"{entry['ip']}/{entry['subnet']}"] = entry["id"]
         return acl
 
-    def process_acl(self, acl: ACL):
+    async def process_acl(self, acl: ACL):
         logger.debug(with_suffix(f"entries to delete {acl.entries_to_delete}", acl_id=acl.id))
         logger.debug(with_suffix(f"entries to add {acl.entries_to_add}", acl_id=acl.id))
         update_entries = []
@@ -293,15 +305,17 @@ class FastlyAPI:
             return
 
         # Only 100 operations per request can be done on an acl.
-        for i in range(0, len(update_entries), 100):
-            update_entries_batch = update_entries[i : i + 100]
-            request_body = {"entries": update_entries_batch}
-            resp = self.session.patch(
-                self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries"),
-                json=request_body,
-            ).json()
+        async with trio.open_nursery() as n:
+            for i in range(0, len(update_entries), 100):
+                update_entries_batch = update_entries[i : i + 100]
+                request_body = {"entries": update_entries_batch}
+                f = partial(self.session.patch, json=request_body)
+                n.start_soon(
+                    f,
+                    self.api_url(f"/service/{acl.service_id}/acl/{acl.id}/entries"),
+                )
 
-        acl = self.refresh_acl_entries(acl)
+        acl = await self.refresh_acl_entries(acl)
 
     @staticmethod
     def api_url(endpoint: str) -> str:

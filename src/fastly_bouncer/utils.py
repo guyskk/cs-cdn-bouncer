@@ -1,7 +1,6 @@
 import logging
 import sys
 
-
 SUPPORTED_ACTIONS = ["ban", "captcha"]
 
 
