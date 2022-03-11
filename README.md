@@ -17,4 +17,4 @@ A bouncer that syncs the decisions made by CrowdSec with Fastly's VCL. Manages m
 
 # Documentation
 
-Please follow [the official documentation](https://docs.crowdsec.net/docs/bouncers/fastly)
+Please follow [the official documentation](https://docs.crowdsec.net/docs/next/bouncers/fastly)
