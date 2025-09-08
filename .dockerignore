@@ -1,5 +1,11 @@
+.git/
+.vscode/
+.DS_Store
+.pytest_cache/
+.python-version
 tmp/
-
+data/
+.mise.toml
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
