@@ -75,14 +75,17 @@ class CrowdsecDecisionHandler:
                 ban_ip_list=ban_ip_list,
             )
 
-    def main(self):
-        LOG.info("starting crowdsec cdn bouncer")
+    def main(self, dryrun: bool = False):
+        flag = "[DRYRUN] " if dryrun else ""
+        LOG.info(f"{flag}starting crowdsec cdn bouncer")
         self._check_crowdsec_client()
         self._check_cdn_api()
         self.crowdsec_client.run()
         # Wait for initial polling by bouncer, so we start with a hydrated state
         time.sleep(3)
-        LOG.info("crowdsec cdn bouncer running")
+        LOG.info(f"{flag}crowdsec cdn bouncer running")
+        if dryrun:
+            return
         while True and self.crowdsec_client.is_running():
             time.sleep(10)
             try:
