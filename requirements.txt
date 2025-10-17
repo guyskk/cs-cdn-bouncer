@@ -55,10 +55,13 @@ sniffio==1.3.1
     # via anyio
 tencentcloud-sdk-python-cdn==3.0.1438
     # via -r requirements.in
-tencentcloud-sdk-python-common==3.0.1456
+tencentcloud-sdk-python-common==3.0.1475
     # via
     #   -r requirements.in
     #   tencentcloud-sdk-python-cdn
+    #   tencentcloud-sdk-python-teo
+tencentcloud-sdk-python-teo==3.0.1469
+    # via -r requirements.in
 typing-extensions==4.15.0
     # via
     #   anyio

@@ -29,6 +29,13 @@ class AppSettings(BaseSettings):
     tencent_cdn_domain: str = Field(
         description="tencent cloud cdn domain",
     )
+    tencent_teo_zone_id: str = Field(
+        description="tencent cloud edgeone zone id",
+    )
+    tencent_teo_ip_limit: int = Field(
+        default=2000,
+        description="tencent cloud edgeone rule ip count limit",
+    )
 
 
 def load_env_config(

@@ -8,4 +8,5 @@ pydantic==2.11.7
 pydantic-settings==2.10.1
 python-dotenv==1.1.1
 tencentcloud-sdk-python-cdn==3.0.1438
-tencentcloud-sdk-python-common==3.0.1456
+tencentcloud-sdk-python-teo==3.0.1469
+tencentcloud-sdk-python-common==3.0.1475
