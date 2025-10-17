@@ -17,17 +17,29 @@ class IpListBuilder:
         self._ip_set = IPSet()
         self._ignore_ip_set = IPSet(ignore_ip_s or [])
         self._discard_ip_s: list[tuple[str, str]] = []
+        # 当前预估CIDR数量，避免频繁计算
+        self._current_cidr_count = 0
+        # 当前IP集合是否已满，避免频繁计算
+        self._is_full = False
+        # 缓存已处理的/24网段，用于快速查找
+        self._processed_net24: set[str] = set()
 
     def _discard_ip(self, ip: str, reason: str):
         self._discard_ip_s.append((ip, reason))
 
     def _add_to_ip_set(self, ip: IPNetwork | IPAddress, source_ip: str):
-        tmp_set = self._ip_set.copy()
-        tmp_set.add(ip)
-        if len(tmp_set.iter_cidrs()) <= self.max_size:
-            self._ip_set = tmp_set
-        else:
-            self._discard_ip(source_ip, "full")
+        if self._current_cidr_count < self.max_size:
+            self._ip_set.add(ip)
+            self._current_cidr_count += 1
+            return
+        if not self._is_full:
+            self._current_cidr_count = len(self._ip_set.iter_cidrs())
+        if self._current_cidr_count < self.max_size:
+            self._ip_set.add(ip)
+            self._current_cidr_count += 1
+            return
+        self._is_full = True
+        self._discard_ip(source_ip, "full")
 
     def add_ip(self, ip: str):
         if "/" in ip:
@@ -49,12 +61,14 @@ class IpListBuilder:
                 return
             # 尝试合并/24网段，如果能合并，则合并
             ip_net = IPNetwork(f"{ip}/24")
-            if self._ip_set.isdisjoint(IPSet([ip_net])):
-                # 不能合并，则尝试添加单个IP
-                self._add_to_ip_set(ip_obj, ip)
-            else:
+            net24_key = str(ip_net)
+            if net24_key in self._processed_net24:
                 # 能合并，则尝试合并/24网段
                 self._add_to_ip_set(ip_net, ip)
+            else:
+                # 不能合并，则尝试添加单个IP
+                self._add_to_ip_set(ip_obj, ip)
+            self._processed_net24.add(net24_key)
 
     def to_list(self):
         self._ip_set.compact()

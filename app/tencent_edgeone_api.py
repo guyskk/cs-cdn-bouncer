@@ -4,7 +4,6 @@ import logging
 from tencentcloud.common import credential
 from tencentcloud.teo.v20220901 import models, teo_client
 
-from app.config import CONFIG
 from app.ip_list import IpListBuilder
 
 LOG = logging.getLogger(__name__)
@@ -14,7 +13,7 @@ class TencentEdgeoneAPI:
     def __init__(self, *, secret_id: str, secret_key: str):
         self._secret_id = secret_id
         self._secret_key = secret_key
-        self._ip_limit = CONFIG.tencent_teo_ip_limit
+        self._ip_limit = 2000
         self._client: teo_client.TeoClient | None = None
 
     def _create_client(self):
@@ -114,7 +113,7 @@ class TencentEdgeoneAPI:
         """
         对接EdgeOne实现封禁IP
         https://cloud.tencent.com/document/api/1552/80721#SecurityConfig
-        EO不限IP数量（假设2000条或10000条）
+        EdgeOne IP数量 限制为每个Rule 2000个IP
         """
         zone_config = self.get_zone_config(domain)
         if zone_config is None:
