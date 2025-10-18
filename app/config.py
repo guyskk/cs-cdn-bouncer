@@ -27,10 +27,10 @@ class AppSettings(BaseSettings):
     tencent_secret_key: str = Field(
         description="tencent cloud secret key",
     )
-    tencent_cdn_domain: str = Field(
+    tencent_cdn_domain: str | None = Field(
         description="tencent cloud cdn domain",
     )
-    tencent_teo_zone_id: str = Field(
+    tencent_teo_zone_id: str | None = Field(
         description="tencent cloud edgeone zone id",
     )
     tencent_teo_max_rule: int = Field(
