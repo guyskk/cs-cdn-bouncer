@@ -45,13 +45,13 @@ class CrowdsecDecisionHandler:
         client.get_decisions_for("1.1.1.1")
 
     def _check_target_api(self):
-        if self.cdn_api:
-            domain = CONFIG.tencent_cdn_domain
+        domain = CONFIG.tencent_cdn_domain
+        if self.cdn_api and domain:
             result = self.cdn_api.get_domain_config(domain)
             if result is None:
                 raise RuntimeError(f"tencent cdn domain {domain} not found")
-        if self.teo_api:
-            zone_id = CONFIG.tencent_teo_zone_id
+        zone_id = CONFIG.tencent_teo_zone_id
+        if self.teo_api and zone_id:
             result = self.teo_api.get_zone_config(zone_id)
             if result is None:
                 raise RuntimeError(f"tencent teo zone {zone_id} not found")
@@ -62,16 +62,12 @@ class CrowdsecDecisionHandler:
         return list(reversed(ret))
 
     def _apply_decision(self, ban_ip_list: list[str]):
-        if self.cdn_api:
-            self.cdn_api.apply_decision(
-                domain=CONFIG.tencent_cdn_domain,
-                ban_ip_list=ban_ip_list,
-            )
-        if self.teo_api:
-            self.teo_api.apply_decision(
-                domain=CONFIG.tencent_teo_zone_id,
-                ban_ip_list=ban_ip_list,
-            )
+        domain = CONFIG.tencent_cdn_domain
+        if self.cdn_api and domain:
+            self.cdn_api.apply_decision(domain=domain, ban_ip_list=ban_ip_list)
+        zone_id = CONFIG.tencent_teo_zone_id
+        if self.teo_api and zone_id:
+            self.teo_api.apply_decision(domain=zone_id, ban_ip_list=ban_ip_list)
 
     def _handle_crowdsec_decision(self):
         """
