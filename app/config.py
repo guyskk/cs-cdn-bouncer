@@ -28,9 +28,11 @@ class AppSettings(BaseSettings):
         description="tencent cloud secret key",
     )
     tencent_cdn_domain: str | None = Field(
+        default=None,
         description="tencent cloud cdn domain",
     )
     tencent_teo_zone_id: str | None = Field(
+        default=None,
         description="tencent cloud edgeone zone id",
     )
     tencent_teo_max_rule: int = Field(
