@@ -15,7 +15,7 @@ class IpListBuilder:
     def __init__(self, *, max_size: int, ignore_ip_s: list[str] | None = None):
         self.max_size = max_size
         self._ip_set = IPSet()
-        self._ignore_ip_set = IPSet(ignore_ip_s or [])
+        self._ignore_ip_set = set(ignore_ip_s or [])
         self._discard_ip_s: list[tuple[str, str]] = []
         # 当前预估CIDR数量，避免频繁计算
         self._current_cidr_count = 0
@@ -58,13 +58,18 @@ class IpListBuilder:
             self._add_ip_impl(ip)
         self._flush_buffer()
 
+    def _is_ignore_ip(self, ip: IPNetwork | IPAddress):
+        if str(ip) in self._ignore_ip_set:
+            return True
+        return False
+
     def _add_ip_impl(self, ip: str):
         if "/" in ip:
-            ip_net = IPNetwork(ip)
+            ip_net = IPNetwork(ip).cidr
             if ip_net.version != 4:
                 self._discard_ip(ip, "not ipv4")
                 return
-            if ip_net in self._ignore_ip_set:
+            if self._is_ignore_ip(ip_net):
                 self._discard_ip(ip, "ignore")
                 return
             self._add_to_ip_set(ip_net, ip)
@@ -73,12 +78,12 @@ class IpListBuilder:
             if ip_obj.version != 4:
                 self._discard_ip(ip, "not ipv4")
                 return
-            if ip_obj in self._ignore_ip_set:
+            if self._is_ignore_ip(ip_obj):
                 self._discard_ip(ip, "ignore")
                 return
             # 尝试合并/24网段，如果能合并，则合并
-            ip_net = IPNetwork(f"{ip}/24")
-            net24_key = str(ip_net.cidr)
+            ip_net = IPNetwork(f"{ip}/24").cidr
+            net24_key = str(ip_net)
             if net24_key in self._processed_net24:
                 # 能合并，则尝试合并/24网段
                 self._add_to_ip_set(ip_net, ip, can_merge=True)
