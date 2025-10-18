@@ -1,5 +1,6 @@
 import datetime
 import logging
+import textwrap
 
 from tencentcloud.cdn.v20180606 import cdn_client, models
 from tencentcloud.common import credential
@@ -105,8 +106,7 @@ class TencentCdnAPI:
             max_size=200 - len(blacklist_ip_s),
             ignore_ip_s=whitelist_ip_s + blacklist_ip_s,
         )
-        for ip in ban_ip_list:
-            ip_list_builder.add_ip(ip)
+        ip_list_builder.update(ban_ip_list)
         target_ip_s = ip_list_builder.to_list()
         discard_ip_s = ip_list_builder.get_discard_list()
         existed_ip_s = target_ip_filter.Filters or []
@@ -151,7 +151,9 @@ class TencentCdnAPI:
         title = f"apply decision to {domain} blacklist={len(ip_s)} discard={len(discard_ip_s)}"
         LOG.info(title)
         blacklist_str = "\n".join(ip_s)
+        blacklist_str = textwrap.shorten(blacklist_str, 800)
         discard_str = "\n".join([f"{ip} {reason}" for ip, reason in discard_ip_s])
+        discard_str = textwrap.shorten(discard_str, 800)
         msg = f"{remark}"
         if blacklist_str:
             msg += f"\n===blacklist===\n{blacklist_str}"

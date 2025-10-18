@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from typing import TextIO
@@ -32,6 +33,10 @@ class AppSettings(BaseSettings):
     tencent_teo_zone_id: str = Field(
         description="tencent cloud edgeone zone id",
     )
+    tencent_teo_max_rule: int = Field(
+        default=10,
+        description="tencent cloud edgeone max rule count",
+    )
 
 
 def load_env_config(
@@ -55,3 +60,9 @@ def load_env_config(
 
 
 CONFIG = load_env_config(env_prefix="CSCDN_")
+
+
+LOG_FORMAT = "%(levelname)1.1s %(asctime)s %(name)s:%(lineno)d %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(format=LOG_FORMAT, datefmt=LOG_DATE_FORMAT, level=CONFIG.log_level)

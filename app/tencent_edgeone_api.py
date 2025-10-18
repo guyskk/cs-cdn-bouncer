@@ -1,19 +1,31 @@
 import datetime
 import logging
+import textwrap
+from dataclasses import dataclass
 
 from tencentcloud.common import credential
 from tencentcloud.teo.v20220901 import models, teo_client
 
+from app.config import CONFIG
+from app.ip_group import IPGroupManager
 from app.ip_list import IpListBuilder
 
 LOG = logging.getLogger(__name__)
+
+
+@dataclass
+class ResultRuleItem:
+    rule: models.CustomRule
+    ip_list: list[str]
+    is_modified: bool
 
 
 class TencentEdgeoneAPI:
     def __init__(self, *, secret_id: str, secret_key: str):
         self._secret_id = secret_id
         self._secret_key = secret_key
-        self._ip_limit = 2000
+        self._max_ip_per_rule = 2000
+        self._ip_limit = self._max_ip_per_rule * CONFIG.tencent_teo_max_rule
         self._client: teo_client.TeoClient | None = None
 
     def _create_client(self):
@@ -48,15 +60,16 @@ class TencentEdgeoneAPI:
         rule_s: list[models.CustomRule] = []
         if zone_config.CustomRules:
             rule_s = zone_config.CustomRules.Rules or []
+        target_rule_s: list[models.CustomRule] = []
         other_rule_s: list[models.CustomRule] = []
-        target_rule: models.CustomRule | None = None
         for rule in rule_s:
             name = rule.Name or ""
             if name.lower().startswith("crowdsec"):
-                target_rule = rule
-                continue
-            other_rule_s.append(rule)
-        return target_rule, other_rule_s
+                target_rule_s.append(rule)
+            else:
+                other_rule_s.append(rule)
+        target_rule_s = list(sorted(target_rule_s, key=lambda x: str(x.Name)))
+        return target_rule_s, other_rule_s
 
     def _get_rule_ip_list(self, rule: models.CustomRule | None) -> list[str]:
         """
@@ -106,8 +119,53 @@ class TencentEdgeoneAPI:
         rule.Priority = 0
         if origin_rule:
             rule.Id = origin_rule.Id
-            rule.Enabled = origin_rule.Enabled
         return rule
+
+    def _ip_list_key(self, ip_list: list[str]):
+        ip_list_str = ",".join(sorted(ip_list))
+        return ip_list_str
+
+    def _build_ip_rule_list(
+        self,
+        existed_rule_s: list[models.CustomRule],
+        target_ip_s: list[str],
+    ) -> list[ResultRuleItem]:
+        existed_group_s: list[list[str]] = []
+        existed_rule_d: dict[str, models.CustomRule] = {}
+        for rule in existed_rule_s:
+            rule_ip_s = self._get_rule_ip_list(rule)
+            rule_key = self._ip_list_key(rule_ip_s)
+            existed_group_s.append(rule_ip_s)
+            existed_rule_d[rule_key] = rule
+
+        # 将IP分组，并更新到已有规则中
+        ip_group = IPGroupManager(max_per_group=self._max_ip_per_rule)
+        ip_group.load(existed_group_s)
+        ip_group.update(target_ip_s)
+        target_group_s = ip_group.get_groups()
+
+        # 构建新的IP规则列表
+        result_rule_s: list[ResultRuleItem] = []
+        now_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        for idx, group in enumerate(target_group_s):
+            rule_key = self._ip_list_key(group)
+            origin_rule = existed_rule_d.get(rule_key)
+            rule_name = f"crowdsec-{idx}-{now_str}"
+            ip_rule = self._build_ip_rule(
+                group,
+                name=rule_name,
+                origin_rule=origin_rule,
+            )
+            is_modified = origin_rule is None
+            result_rule_s.append(
+                ResultRuleItem(
+                    rule=ip_rule,
+                    is_modified=is_modified,
+                    ip_list=group,
+                )
+            )
+
+        return result_rule_s
 
     def apply_decision(self, domain: str, ban_ip_list: list[str]):
         """
@@ -119,31 +177,30 @@ class TencentEdgeoneAPI:
         if zone_config is None:
             LOG.warning(f"zone_id not found: {domain}")
             return False
-        target_rule, other_rule_s = self._split_rule_s(zone_config)
-        existed_ip_s = self._get_rule_ip_list(target_rule)
+        existed_rule_s, other_rule_s = self._split_rule_s(zone_config)
+        # 构建完整IP黑名单列表
         ip_list_builder = IpListBuilder(
             max_size=self._ip_limit,
             ignore_ip_s=[],
         )
-        for ip in ban_ip_list:
-            ip_list_builder.add_ip(ip)
+        ip_list_builder.update(ban_ip_list)
         target_ip_s = ip_list_builder.to_list()
         discard_ip_s = ip_list_builder.get_discard_list()
-        if existed_ip_s == target_ip_s:
-            LOG.info(f"IP list no change, no need to apply to {domain}")
-            return True
-        now_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        rule_name = f"crowdsec-{now_str}"
-        ip_rule = self._build_ip_rule(
-            target_ip_s,
-            origin_rule=target_rule,
-            name=rule_name,
+
+        result_rule_s = self._build_ip_rule_list(
+            existed_rule_s=existed_rule_s,
+            target_ip_s=target_ip_s,
         )
-        apply_rule_s = other_rule_s + [ip_rule]
+        num_modified = sum(x.is_modified for x in result_rule_s)
+        if num_modified <= 0:
+            LOG.info(f"IP rules no change, no need to apply to {domain}")
+            return True
+
+        apply_rule_s = other_rule_s + [x.rule for x in result_rule_s]
         self._log_apply_decision(
             domain=domain,
-            remark=rule_name,
-            ip_s=target_ip_s,
+            result_rule_s=result_rule_s,
+            target_ip_s=target_ip_s,
             discard_ip_s=discard_ip_s,
         )
         req = models.ModifySecurityPolicyRequest()
@@ -160,15 +217,18 @@ class TencentEdgeoneAPI:
     def _log_apply_decision(
         self,
         domain: str,
-        remark: str,
-        ip_s: list[str],
+        result_rule_s: list[ResultRuleItem],
+        target_ip_s: list[str],
         discard_ip_s: list[tuple[str, str]],
     ):
-        title = f"apply decision to {domain} blacklist={len(ip_s)} discard={len(discard_ip_s)}"
-        LOG.info(title)
-        blacklist_str = "\n".join(ip_s)
+        msg = f"apply decision to {domain} blacklist={len(target_ip_s)} discard={len(discard_ip_s)}"
+        blacklist_str = "\n".join(target_ip_s)
+        blacklist_str = textwrap.shorten(blacklist_str, 800)
         discard_str = "\n".join([f"{ip} {reason}" for ip, reason in discard_ip_s])
-        msg = f"{remark}"
+        discard_str = textwrap.shorten(discard_str, 800)
+        for item in result_rule_s:
+            flag = "modified" if item.is_modified else "no-change"
+            msg += f"\nrule: {str(item.rule.Name)} num_ip={len(item.ip_list)} {flag}"
         if blacklist_str:
             msg += f"\n===blacklist===\n{blacklist_str}"
         if discard_str:
