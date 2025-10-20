@@ -1,4 +1,5 @@
 import datetime
+import difflib
 import logging
 import textwrap
 from dataclasses import dataclass
@@ -149,7 +150,7 @@ class TencentEdgeoneAPI:
         now_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         for idx, group in enumerate(target_group_s):
             rule_key = self._ip_list_key(group)
-            origin_rule = existed_rule_d.get(rule_key)
+            origin_rule = existed_rule_d.pop(rule_key, None)
             rule_name = f"crowdsec-{idx}-{now_str}"
             ip_rule = self._build_ip_rule(
                 group,
@@ -164,6 +165,24 @@ class TencentEdgeoneAPI:
                     ip_list=group,
                 )
             )
+
+        # 复用规则ID，使用相似匹配
+        def _pick_best_match_rule(key: str):
+            if not existed_rule_d:
+                return None
+            origin_key_s = list(existed_rule_d.keys())
+            match_s = difflib.get_close_matches(key, origin_key_s, n=1, cutoff=0.01)
+            if not match_s:
+                return None
+            match_key = match_s[0]
+            return existed_rule_d.pop(match_key)
+
+        for item in result_rule_s:
+            if item.rule.Id is None:
+                rule_key = self._ip_list_key(item.ip_list)
+                origin_rule = _pick_best_match_rule(rule_key)
+                if origin_rule:
+                    item.rule.Id = origin_rule.Id
 
         return result_rule_s
 
@@ -228,7 +247,7 @@ class TencentEdgeoneAPI:
         discard_str = textwrap.shorten(discard_str, 800)
         for item in result_rule_s:
             flag = "modified" if item.is_modified else "no-change"
-            msg += f"\nrule: {str(item.rule.Name)} num_ip={len(item.ip_list)} {flag}"
+            msg += f"\nrule: {item.rule.Name} id={item.rule.Id} num_ip={len(item.ip_list)} {flag}"
         if blacklist_str:
             msg += f"\n===blacklist===\n{blacklist_str}"
         if discard_str:
