@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from netaddr import IPAddress, IPNetwork, IPSet
 
 
@@ -22,7 +24,7 @@ class IpListBuilder:
         # 当前IP集合是否已满，避免频繁计算
         self._is_full = False
         # 缓存已处理的/24网段，用于快速查找
-        self._processed_net24: set[str] = set()
+        self._processed_net24 = defaultdict(lambda: 0)
         # 缓存IP对象，用于一次性添加到IPSet中，性能更好
         self._buffer_ip_s: list[IPAddress | IPNetwork] = []
 
@@ -81,16 +83,16 @@ class IpListBuilder:
             if self._is_ignore_ip(ip_obj):
                 self._discard_ip(ip, "ignore")
                 return
-            # 尝试合并/24网段，如果能合并，则合并
+            self._add_to_ip_set(ip_obj, ip)
+            # 检查是否需要合并/24网段
+            # 只有在同一/24网段中积累了10个或更多IP时，才合并为网段
+            # 这是为了避免过早合并，保持对少量IP的精确封禁
             ip_net = IPNetwork(f"{ip}/24").cidr
             net24_key = str(ip_net)
-            if net24_key in self._processed_net24:
-                # 能合并，则尝试合并/24网段
+            self._processed_net24[net24_key] += 1
+            net24_count = self._processed_net24[net24_key]
+            if net24_count >= 10:
                 self._add_to_ip_set(ip_net, ip, can_merge=True)
-            else:
-                # 不能合并，则尝试添加单个IP
-                self._add_to_ip_set(ip_obj, ip)
-            self._processed_net24.add(net24_key)
 
     def to_list(self):
         self._ip_set.compact()

@@ -1,3 +1,5 @@
+from typing import cast
+
 from app.config import CONFIG
 from app.tencent_edgeone_api import TencentEdgeoneAPI
 
@@ -9,5 +11,6 @@ def test_tencent_edgeone_api_basic():
     )
     ret = teo_api.list_zone()
     assert ret, "zone not found"
-    config = teo_api.get_zone_config(zone_id=CONFIG.tencent_teo_zone_id)
+    zone_id = cast(str, CONFIG.tencent_teo_zone_id)
+    config = teo_api.get_zone_config(zone_id=zone_id)
     assert config, "zone config not found"
