@@ -65,3 +65,30 @@ def test_ip_group_edge_case():
     assert len(groups[1]) == 1
     assert changes["added"] == 1
     assert changes["removed"] == 0
+
+def test_remove_ip_after_group_becomes_empty():
+    """回归：删空一个组后继续删除后面的 IP 不能崩。
+
+    旧实现会在组被删空时 pop 掉该组，导致后面所有组的索引整体前移，
+    同一轮 update 里再删除下一个 IP 就会 KeyError/IndexError。
+    """
+    manager = IPGroupManager(max_per_group=2)
+    manager.load([["a1", "a2"], ["b1", "b2"]])
+
+    manager._remove_ip("a1")
+    manager._remove_ip("a2")  # 第一组被删空
+    manager._remove_ip("b2")  # 旧实现在这里崩溃
+
+    assert manager.get_groups() == [["b1"]]
+    assert manager.get_total_ip_count() == 1
+
+
+def test_update_with_multiple_groups_emptied():
+    """回归：一次 update 里同时删空多个组，结果要正确。"""
+    manager = IPGroupManager(max_per_group=2)
+    manager.load([["a1", "a2"], ["b1", "b2"], ["c1", "c2"]])
+
+    changes = manager.update(["c1", "c2"])
+
+    assert changes == {"removed": 4, "added": 0, "group_count": 3, "total_ips": 2}
+    assert manager.get_groups() == [["c1", "c2"]]

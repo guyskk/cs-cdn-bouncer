@@ -52,14 +52,15 @@ class IPGroupManager:
         }
 
     def _remove_ip(self, ip: str):
-        """内部方法：移除IP"""
+        """内部方法：移除IP
+
+        注意：这里不能删除空组。组索引是 ip_to_group 的取值，删组会让后面的组整体
+        前移、索引失效，同一轮 update 里继续删除下一个 IP 就会 KeyError/IndexError。
+        空组保留，由 get_groups() 过滤，后续 _add_ip() 会优先填满它。
+        """
         if ip in self.ip_to_group:
-            group_idx = self.ip_to_group[ip]
-            self.groups[group_idx].remove(ip)
-            self.ip_to_group.pop(ip)
-            # 删除空组
-            if not self.groups[group_idx]:
-                self.groups.pop(group_idx)
+            group_idx = self.ip_to_group.pop(ip)
+            self.groups[group_idx].discard(ip)
 
     def _add_ip(self, ip: str):
         """内部方法：添加IP到合适的组"""
@@ -81,8 +82,8 @@ class IPGroupManager:
         return new_group_idx
 
     def get_groups(self):
-        """获取当前分组情况"""
-        return [list(sorted(group)) for group in self.groups]
+        """获取当前分组情况（空组不产出规则）"""
+        return [list(sorted(group)) for group in self.groups if group]
 
     def get_total_ip_count(self):
         """获取总IP数量"""
